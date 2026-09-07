@@ -228,6 +228,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
   <div class="railfoot">
     <button class="railbtn" id="newBtn"><i class="g">+</i><span>New session</span><span class="k">&#8984;E</span></button>
     <button class="railbtn" id="paletteBtn"><i class="g">&#8801;</i><span>Search</span><span class="k">&#8984;K</span></button>
+    <button class="railbtn" id="skillsBtn"><i class="g">&#9671;</i><span>Skills</span><span class="k" id="skillCount">&#8984;J</span></button>
     <div class="iconrow">
       <button class="ico" id="themeBtn" title="Light / dark">&#9680;</button>
       <button class="ico" id="soundBtn" title="Sound">&#9834;</button>
@@ -723,10 +724,10 @@ async function killSession(id){
 }
 
 /* ── sheets ──────────────────────────────────────────────────────────────── */
-let openSheet = null, sel = 0, items = [], newCmd = 'claude'
+let openSheet = null, sel = 0, items = [], newCmd = 'claude', paletteMode = 'all'
 const skipOn = () => $('skipbox').checked
-function showSheet(which){
-  openSheet = which; sel = 0
+function showSheet(which, mode = 'all'){
+  openSheet = which; sel = 0; paletteMode = mode
   $(which === 'palette' ? 'palette' : 'newsheet').classList.add('open')
   if (which === 'new'){
     // Chrome restores form state across reloads, so this box could come back
@@ -736,7 +737,10 @@ function showSheet(which){
     $('skipwrap').classList.remove('armed')
   }
   const inp = which === 'palette' ? $('pq') : $('nq')
-  inp.value = ''; inp.focus(); render()
+  inp.value = ''
+  inp.placeholder = paletteMode === 'skill'
+    ? 'Skills and slash commands…' : 'Skills, projects, sessions…'
+  inp.focus(); render()
 }
 function closeSheet(){
   if (!openSheet) return
@@ -745,6 +749,11 @@ function closeSheet(){
 }
 function paletteItems(){
   const out = []
+  // "Skills" opens the same sheet scoped to skills, so you can browse the list
+  // without knowing a name — the whole point of asking for a dropdown.
+  if (paletteMode === 'skill')
+    return skills.map(k => ({ kind: k.kind === 'command' ? 'cmd' : 'skill',
+      t: '/' + k.name, s: k.desc, run: () => typeIn('/' + k.name + ' ') }))
   for (const s of sessions) if (s.id !== active)
     out.push({kind:'session', t:s.label, s:tilde(s.cwd), run:() => switchTo(s.id)})
   for (const s2 of sessions)
@@ -787,7 +796,9 @@ function render(){
   const q = (isP ? $('pq') : $('nq')).value.trim().toLowerCase()
   items = (isP ? paletteItems() : newItems())
     .map(it => [fuzzy(q, it), it]).filter(x => x[0] > 0)
-    .sort((a,b) => b[0] - a[0]).map(x => x[1]).slice(0, 80)
+    // 80 truncated the skills list, which breaks the one case it exists for:
+    // browsing when you do NOT know the name. The rows are cheap; show them.
+    .sort((a,b) => b[0] - a[0]).map(x => x[1]).slice(0, 300)
   if (sel >= items.length) sel = Math.max(0, items.length - 1)
   const box = $(isP ? 'plist' : 'nlist')
   box.innerHTML = items.length ? items.map((it,i) =>
@@ -822,6 +833,9 @@ addEventListener('keydown', e => {
     if (openSheet === 'palette') closeSheet(); else { closeSheet(); showSheet('palette') }; return }
   if (meta && e.key.toLowerCase() === 'e'){ e.preventDefault()
     if (openSheet === 'new') closeSheet(); else { closeSheet(); showSheet('new') }; return }
+  if (meta && e.key.toLowerCase() === 'j'){ e.preventDefault()
+    if (openSheet === 'palette' && paletteMode === 'skill') closeSheet()
+    else { closeSheet(); showSheet('palette', 'skill') }; return }
   if (meta && /^[1-9]$/.test(e.key)){
     const t = sessions[Number(e.key) - 1]
     if (t){ e.preventDefault(); closeSheet(); switchTo(t.id) }
@@ -849,6 +863,7 @@ paintSound()
 
 $('newBtn').onclick = () => showSheet('new')
 $('paletteBtn').onclick = () => showSheet('palette')
+$('skillsBtn').onclick   = () => showSheet('palette', 'skill')
 $('themeBtn').onclick = () => {
   theme = theme === 'dark' ? 'light' : 'dark'
   localStorage.setItem('oneterm-theme', theme)
@@ -930,6 +945,7 @@ function firstRun(){
   sendResize()
   const [sk, pr] = await Promise.all([api('/skills'), api('/projects')])
   skills = sk ?? []; projects = pr ?? []
+  $('skillCount').textContent = skills.length + ' ⌘J'
   await refresh()
   if (!sessions.length) firstRun()
   else {
