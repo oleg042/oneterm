@@ -192,6 +192,8 @@ footer .skipwarn{color:var(--warn)}
 .row{display:flex;align-items:baseline;gap:12px;padding:9px 12px;border-radius:var(--r);
   cursor:pointer}
 .row.sel{background:var(--accent-soft)}
+.row.dim .t,.row.dim .s{opacity:.45}
+.row.dim .kind{opacity:.55}
 .row .kind{flex:none;width:74px;font-family:var(--mono);font-size:9px;letter-spacing:.1em;
   text-transform:uppercase;color:var(--accent)}
 .row .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -776,23 +778,32 @@ function paletteItems(){
   // "Skills" opens the same sheet scoped to skills, so you can browse the list
   // without knowing a name — the whole point of asking for a dropdown.
   if (paletteMode === 'skill'){
-    /* A project skill only fires when Claude Code is running inside that
-       project, so only offer it for a session whose cwd is in there. Listing
-       them all would advertise skills that would silently do nothing. */
+    /* Show EVERY skill you own, labelled with where it comes from. A project
+       skill only actually loads for a session inside that project, so the ones
+       that cannot fire here are dimmed and say so when picked — but they are
+       still listed, because you cannot browse what you cannot see. */
     const cwd = sessions.find(x => x.id === active)?.cwd || ''
-    const inScope = k => k.scope !== 'project' || (k.dir && (cwd === k.dir || cwd.startsWith(k.dir + '/')))
-    const usable = skills.filter(inScope)
-    const pool = skillTab === 'fav' ? usable.filter(k => favs.has(k.name)) : usable
-    return pool
-      // starred first in the All tab, so the ones you use surface without typing
-      .slice().sort((a, b) => (favs.has(b.name) - favs.has(a.name)) || a.name.localeCompare(b.name))
-      // project skills sort first: they are the ones specific to where you are
-      .sort((a, b) => (b.scope === 'project') - (a.scope === 'project'))
-      .map(k => ({ kind: k.scope === 'project' ? k.project.slice(0,10)
-                       : k.kind === 'command' ? 'cmd' : 'skill',
-        name: k.name, t: '/' + k.name,
-        s: (k.scope === 'project' ? '· ' : '') + (k.desc || ''),
-        run: () => typeIn('/' + k.name + ' ') }))
+    const usable = k => k.scope !== 'project'
+      || (k.dir && (cwd === k.dir || cwd.startsWith(k.dir + '/')))
+    const pool = skillTab === 'fav' ? skills.filter(k => favs.has(k.name)) : skills
+    return pool.slice()
+      .sort((a, b) =>
+        (usable(b) - usable(a)) ||                       // usable here, first
+        ((b.scope === 'project') - (a.scope === 'project')) ||
+        a.name.localeCompare(b.name))
+      .map(k => {
+        const here = usable(k)
+        return {
+          kind: k.scope === 'project' ? k.project.slice(0, 12)
+              : k.kind === 'command' ? 'command' : 'global',
+          name: k.name, t: '/' + k.name, s: k.desc || '',
+          dim: !here, project: k.project, dir: k.dir,
+          run: () => {
+            typeIn('/' + k.name + ' ')
+            if (!here) toast(`/${k.name} is a ${k.project} skill — it loads in a session there`, 4200)
+          },
+        }
+      })
   }
   for (const s of sessions) if (s.id !== active)
     out.push({kind:'session', t:s.label, s:tilde(s.cwd), run:() => switchTo(s.id)})
@@ -843,7 +854,7 @@ function render(){
   const box = $(isP ? 'plist' : 'nlist')
   const starred = paletteMode === 'skill' && isP
   box.innerHTML = items.length ? items.map((it,i) =>
-    '<div class="row' + (i === sel ? ' sel' : '') + '" data-i="' + i + '">' +
+    '<div class="row' + (i === sel ? ' sel' : '') + (it.dim ? ' dim' : '') + '" data-i="' + i + '">' +
     (starred ? '<span class="star' + (favs.has(it.name) ? ' on' : '') + '" data-fav="' +
        esc(it.name) + '" title="favourite">' + (favs.has(it.name) ? '★' : '☆') + '</span>' : '') +
     '<span class="kind">' + it.kind + '</span><span class="t">' + esc(it.t) + '</span>' +
@@ -858,7 +869,7 @@ function render(){
   }
   if (starred) $('skillTabCount').textContent =
     skillTab === 'fav' ? favs.size + ' favourite' + (favs.size === 1 ? '' : 's')
-                       : items.length + ' here · ' + favs.size + ' starred'
+                       : items.length + ' skills · ' + items.filter(i => !i.dim).length + ' available here'
   box.children[sel]?.scrollIntoView({block:'nearest'})
   $('folderCount').textContent = projects.length + ' folders'
 }
