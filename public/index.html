@@ -398,7 +398,11 @@ let lastIcon = ''
 function paintFavicon(){
   const waiting = sessions.filter(s => s.waiting).length
   const working = sessions.some(s => s.working)
-  const key = waiting ? 'w' + waiting : working ? 'r' : 'i'
+  // "done, and you haven't looked at it yet" is the state you most need in the
+  // tab, because by definition you tabbed away. It was the one state missing.
+  const done = sessions.filter(s =>
+    (activity.get(s.id) || {}).doneUnseen && s.id !== active).length
+  const key = waiting ? 'w' + waiting : working ? 'r' : done ? 'd' + done : 'i'
   if (key === lastIcon) return          // redrawing every poll is wasteful
   lastIcon = key
   const c = document.createElement('canvas'); c.width = c.height = 32
@@ -410,9 +414,10 @@ function paintFavicon(){
   g.strokeStyle = dark ? '#EDE9E1' : '#1C1A17'
   g.lineWidth = 3.2; g.lineCap = 'round'; g.lineJoin = 'round'
   g.beginPath(); g.moveTo(10, 10); g.lineTo(18, 16); g.lineTo(10, 22); g.stroke()
-  if (waiting || working){
+  if (waiting || working || done){
     g.beginPath(); g.arc(25, 7, 6.5, 0, Math.PI * 2)
-    g.fillStyle = waiting ? '#D9AE55' : '#E0703A'; g.fill()
+    // same language as the rail: amber blocked, accent running, green finished
+    g.fillStyle = waiting ? '#D9AE55' : working ? '#E0703A' : '#7BA57B'; g.fill()
     g.strokeStyle = dark ? '#14130F' : '#F7F5F1'; g.lineWidth = 2; g.stroke()
   }
   $('favicon').href = c.toDataURL('image/png')
@@ -424,8 +429,12 @@ function paintFavicon(){
 function paintTitle(){
   const waiting = sessions.filter(s => s.waiting)
   const cur = sessions.find(s => s.id === active)
+  const finished = sessions.filter(s =>
+    (activity.get(s.id) || {}).doneUnseen && s.id !== active)
   document.title = waiting.length
     ? '● ' + (waiting.length > 1 ? waiting.length + ' need you' : waiting[0].label + ' needs you')
+    : finished.length
+    ? '✓ ' + (finished.length > 1 ? finished.length + ' done' : finished[0].label + ' done')
     : (cur ? cur.label + ' — oneterm' : 'oneterm')
   paintFavicon()
 }
