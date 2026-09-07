@@ -15,7 +15,7 @@
  * can disagree with reality. `tmux ls` IS the list.
  */
 import { createServer } from 'node:http'
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, access, realpath } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -260,26 +260,52 @@ async function readSkills() {
     } catch {}
   }
 
-  for (const k of out) if (k.path) readable.add(k.path)
-  const seen = new Set()
-  return out.filter(s => {
-    // a project skill and a global one may share a name; keep both, keyed by scope
-    const k = (s.scope || 'global') + ':' + s.name
-    return !seen.has(k) && seen.add(k)
-  }).sort((a, b) => a.name.localeCompare(b.name))
+  /* Identity is not the name, and it is not the path either — it is
+   * (scope, name) resolved to the BEST copy of that file.
+   *
+   * Two different files can share a name: a project /push shadows a global
+   * /push, and both must survive so the viewer can tell them apart.
+   * One file can appear under many paths: symlinked into ~/.claude/skills, and
+   * cached by the plugin manager once per version — the cache holds seven
+   * copies of /commit. Those are not seven skills.
+   *
+   * So: collapse symlinks by real path, then keep one per (scope, name),
+   * preferring what the user actually owns over a marketplace copy over a
+   * version cache. A symlinked global therefore outranks its project original,
+   * which is the point of symlinking it in. */
+  const rank = (f) =>
+      f.startsWith(join(HOME, '.claude/skills')) || f.startsWith(join(HOME, '.claude/commands')) ? 0
+    : f.includes('/plugins/marketplaces/') ? 1
+    : f.includes('/plugins/cache/') ? 3
+    : 2
+
+  const byReal = new Map()
+  for (const k of out) {
+    const real = await realpath(k.path).catch(() => k.path)
+    if (!byReal.has(real)) byReal.set(real, { ...k, real })
+  }
+  const best = new Map()
+  for (const k of byReal.values()) {
+    const key = (k.scope || 'global') + ':' + k.name
+    const prev = best.get(key)
+    if (!prev || rank(k.path) < rank(prev.path)) best.set(key, k)
+  }
+  const list = [...best.values()]
+  for (const k of list) { readable.add(k.path); readable.add(k.real) }
+  return list.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 async function findUnder(root, filename, depth) {
   try {
     const { stdout } = await execFileP('find',
-      [root, '-maxdepth', String(depth), '-name', filename], { maxBuffer: 8e6 })
+      ['-L', root, '-maxdepth', String(depth), '-name', filename], { maxBuffer: 8e6 })
     return stdout.split('\n').filter(Boolean)
   } catch { return [] }
 }
 
 async function findMd(root) {
   try {
-    const { stdout } = await execFileP('find', [root, '-name', '*.md', '-maxdepth', '6'],
+    const { stdout } = await execFileP('find', ['-L', root, '-name', '*.md', '-maxdepth', '6'],
                                        { maxBuffer: 8e6 })
     return stdout.split('\n').filter(Boolean)
   } catch { return [] }
@@ -311,7 +337,9 @@ function parseFrontmatter(txt){
 
 async function tmuxlessFind(root, filename) {
   try {
-    const { stdout } = await execFileP('find', [root, '-name', filename, '-maxdepth', '6'],
+    // -L follows symlinks. Without it six of the user's global skills were
+    // invisible, including the two they use to move work between machines.
+    const { stdout } = await execFileP('find', ['-L', root, '-name', filename, '-maxdepth', '6'],
                                        { maxBuffer: 4e6 })
     return stdout.split('\n').filter(Boolean)
   } catch { return [] }
