@@ -137,6 +137,13 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
   background:var(--paper);overflow:hidden}
 main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
 #term{position:absolute;inset:0;padding:16px 8px 8px 20px}
+/* xterm renders a default (white) scrollbar down the right edge. With
+   scrollback:0 it scrolls nothing — tmux owns history and handles the wheel —
+   so it was a bright line against a dark terminal for no purpose. */
+.xterm .xterm-viewport{scrollbar-width:none;-ms-overflow-style:none;
+  background-color:transparent !important}
+.xterm .xterm-viewport::-webkit-scrollbar{width:0;height:0;display:none}
+
 .overlay{position:absolute;inset:0;display:grid;place-items:center;z-index:4;
   background:var(--paper);text-align:center;padding:24px}
 .overlay h2{margin:0 0 8px;font-size:15px;font-weight:500;letter-spacing:.01em}
