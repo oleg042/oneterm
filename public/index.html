@@ -107,12 +107,16 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 .sess:hover .x{opacity:1}
 .sess .x:hover{color:var(--err);background:var(--paper)}
 .sess .x.armed{opacity:1;color:var(--sink);background:var(--err);font-size:11px}
-.sess[draggable="true"]{cursor:default}
-.sess.dragging{opacity:.4}
-.sess.over-top::after,.sess.over-bot::after{content:'';position:absolute;left:8px;right:8px;
-  height:1.5px;background:var(--accent);border-radius:2px}
-.sess.over-top::after{top:-1px}
-.sess.over-bot::after{bottom:-1px}
+/* Same feel as the tables list: the row you hold lifts and follows the pointer,
+   and the rows it would displace slide out of the way to open a gap. Only the
+   OTHERS animate — the held row must track the pointer with zero lag. */
+.sess{transition:transform 190ms cubic-bezier(.2,.6,.35,1)}
+.sess.drag-src{transition:none;z-index:6;cursor:grabbing;
+  background:var(--raise);border-radius:var(--r);
+  box-shadow:0 10px 26px rgba(0,0,0,.30);opacity:.97}
+body.rail-dragging{cursor:grabbing}
+body.rail-dragging .sess{user-select:none}
+@media (prefers-reduced-motion:reduce){.sess{transition:none}}
 .rename{width:100%;background:var(--sink);border:1px solid var(--accent);
   border-radius:3px;padding:3px 6px;font-family:var(--ui);font-size:13px;
   color:var(--ink);outline:none}
@@ -483,20 +487,75 @@ const soundNeeds = () => tone([[523, 0, 0.15], [784, 0.11, 0.15], [1046, 0.22, 0
 
 /* ── rail ────────────────────────────────────────────────────────────────── */
 let dragId = null, armedKill = null, armTimer = null, lastSig = '', renaming = false
-function clearDropMarks(){
-  for (const n of $('slist').children) n.classList.remove('over-top','over-bot')
+
+/* Pointer-driven sorting, modelled on dnd-kit's vertical list strategy (what
+   the tables list uses). HTML5 drag-and-drop cannot do this: it hands you an
+   OS ghost image and no control over the other items, so the best it managed
+   was a hairline showing where the drop would land. Here the neighbours
+   actually move. */
+let drag = null
+const DRAG_THRESHOLD = 4          // px before a press becomes a drag, so clicks survive
+
+function beginDrag(e, el, id){
+  if (e.button !== 0 || renaming) return
+  if (e.target.closest('.x') || e.target.closest('input')) return   // kill button, rename field
+  const rows = [...$('slist').children]
+  const idx = rows.indexOf(el)
+  if (idx < 0) return
+  const rects = rows.map(r => r.getBoundingClientRect())
+  const step = rows.length > 1 ? rects[1].top - rects[0].top : rects[0].height
+  drag = { id, el, rows, idx, to: idx, step, startY: e.clientY, moved: false }
+  el.setPointerCapture?.(e.pointerId)
+  el.onpointermove = onDragMove
+  el.onpointerup = el.onpointercancel = endDrag
 }
-async function dropOn(targetId, after){
-  clearDropMarks()
-  const from = sessions.findIndex(x => x.id === dragId)
-  if (from < 0 || dragId === targetId) { dragId = null; return }
-  const moved = sessions[from]
-  const rest = sessions.filter(x => x.id !== dragId)
-  const at = rest.findIndex(x => x.id === targetId)
-  rest.splice(at + (after ? 1 : 0), 0, moved)
-  sessions = rest
+
+function onDragMove(e){
+  if (!drag) return
+  const dy = e.clientY - drag.startY
+  if (!drag.moved){
+    if (Math.abs(dy) < DRAG_THRESHOLD) return      // still a click, not a drag
+    drag.moved = true; dragId = drag.id
+    document.body.classList.add('rail-dragging')
+    drag.el.classList.add('drag-src')
+  }
+  drag.el.style.transform = `translateY(${dy}px)`
+
+  // where would it land? one step of travel = one position
+  const to = Math.max(0, Math.min(drag.rows.length - 1, drag.idx + Math.round(dy / drag.step)))
+  if (to !== drag.to){ drag.to = to; layoutGap() }
+}
+
+/* Everything between the origin and the target shifts by one row, opening a
+   gap exactly where the held row will land. */
+function layoutGap(){
+  const { rows, idx, to, step, el } = drag
+  rows.forEach((r, i) => {
+    if (r === el) return
+    let shift = 0
+    if (idx < to && i > idx && i <= to) shift = -step
+    else if (idx > to && i >= to && i < idx) shift = step
+    r.style.transform = shift ? `translateY(${shift}px)` : ''
+  })
+}
+
+async function endDrag(e){
+  if (!drag) return
+  const d = drag; drag = null
+  d.el.onpointermove = d.el.onpointerup = d.el.onpointercancel = null
+  d.el.releasePointerCapture?.(e.pointerId)
+  for (const r of d.rows) r.style.transform = ''
+  d.el.classList.remove('drag-src')
+  document.body.classList.remove('rail-dragging')
+  if (!d.moved){ dragId = null; return }            // it was a click after all
+  if (d.to === d.idx){ dragId = null; paintRail(); return }
+
+  const next = sessions.slice()
+  const [moved] = next.splice(d.idx, 1)
+  next.splice(d.to, 0, moved)
+  sessions = next
   dragId = null
-  paintRail()                                    // optimistic: no wait, no flicker
+  paintRail()                                       // optimistic: no wait, no flicker
   await post('/reorder?ids=' + sessions.map(x => x.id).join(','))
 }
 
@@ -580,29 +639,8 @@ function paintRail(){
     }
     // dblclick anywhere in the row, not just on the ~90px name
     el.ondblclick = e => { e.preventDefault(); e.stopPropagation(); startRename(el, s) }
-    el.draggable = true
     el.dataset.id = s.id
-    el.ondragstart = e => {
-      dragId = s.id; el.classList.add('dragging')
-      e.dataTransfer.effectAllowed = 'move'
-      e.dataTransfer.setData('text/plain', s.id)   // Firefox needs a payload
-    }
-    el.ondragover = e => {
-      if (!dragId || dragId === s.id) return
-      e.preventDefault(); e.dataTransfer.dropEffect = 'move'
-      const r = el.getBoundingClientRect()
-      const after = e.clientY > r.top + r.height / 2
-      clearDropMarks()
-      el.classList.add(after ? 'over-bot' : 'over-top')
-    }
-    el.ondragleave = () => el.classList.remove('over-top','over-bot')
-    el.ondrop = e => {
-      e.preventDefault()
-      const r = el.getBoundingClientRect()
-      dropOn(s.id, e.clientY > r.top + r.height / 2)
-    }
-    el.ondragend = () => { dragId = null; clearDropMarks()
-      for (const n of $('slist').children) n.classList.remove('dragging') }
+    el.onpointerdown = e => beginDrag(e, el, s.id)
     const x = document.createElement('span')
     const armed = armedKill === s.id
     x.className = 'x' + (armed ? ' armed' : '')
