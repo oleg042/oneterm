@@ -144,6 +144,17 @@ main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
   background-color:transparent !important}
 .xterm .xterm-viewport::-webkit-scrollbar{width:0;height:0;display:none}
 
+.dropzone{position:absolute;inset:10px;z-index:6;display:none;place-items:center;
+  border:1.5px dashed var(--accent);border-radius:10px;pointer-events:none;
+  background:color-mix(in srgb,var(--accent) 7%,transparent);
+  color:var(--accent);font-size:13px;letter-spacing:.02em}
+body.dragging-file .dropzone{display:grid}
+.dropzone b{font-weight:500}
+.droptoast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);z-index:7;
+  background:var(--sink);border:1px solid var(--line2);border-radius:var(--r);
+  padding:7px 12px;font-family:var(--mono);font-size:11px;color:var(--muted);
+  box-shadow:0 6px 20px rgba(0,0,0,.25);display:none}
+.droptoast.show{display:block}
 .overlay{position:absolute;inset:0;display:grid;place-items:center;z-index:4;
   background:var(--paper);text-align:center;padding:24px}
 .overlay h2{margin:0 0 8px;font-size:15px;font-weight:500;letter-spacing:.01em}
@@ -223,6 +234,8 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
 <div class="stack">
   <main>
     <div id="term"></div>
+    <div class="dropzone"><span>Drop files to add their paths &mdash; <b>images, docs, screenshots</b></span></div>
+    <div class="droptoast" id="droptoast"></div>
     <div class="overlay" id="overlay" style="display:none"></div>
   </main>
   <footer>
@@ -310,7 +323,10 @@ let sessions = [], active = localStorage.getItem('oneterm-active'), ws = null
 let retry = 0, retryTimer = null, wantId = null
 let skills = [], projects = []
 const activity = new Map()
-const api = p => fetch(p).then(r => r.json()).catch(() => null)
+const api  = p => fetch(p).then(r => r.json()).catch(() => null)
+// State-changing calls must not be GETs: a GET is reachable from an <img> tag
+// on any page you happen to have open. The server rejects non-POST for these.
+const post = p => fetch(p, { method: 'POST' }).then(r => r.json()).catch(() => null)
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const tilde = p => (p||'').replace(/^\/Users\/[^/]+/, '~')
 
@@ -327,7 +343,7 @@ function connect(id){
     const m = sessions.find(x => x.id === id)
     setConn(true, m ? (m.cmd === 'claude' ? 'claude' : 'shell') : 'connected')
     sendResize(); term.focus() }
-  sock.onmessage = e => { if (ws===sock){ term.write(e.data); markBusy(id) } }
+  sock.onmessage = e => { if (ws===sock) term.write(e.data) }
   sock.onclose = () => { if (ws!==sock) return; setConn(false,'reconnecting'); scheduleRetry() }
   sock.onerror = () => { if (ws===sock) setConn(false,'reconnecting') }
 }
@@ -370,28 +386,12 @@ new ResizeObserver(scheduleResize).observe($('term'))
 addEventListener('resize', scheduleResize)
 term.onData(d => { if (ws?.readyState === 1) ws.send(JSON.stringify({t:'in',d})) })
 
-/* ── busy / done ─────────────────────────────────────────────────────────── */
-function markBusy(id){
-  const a = activity.get(id) ?? {}
-  const was = a.busy === true
-  a.last = Date.now(); a.busy = true; a.notified = false; a.done = false
-  activity.set(id, a)
-  // Only repaint on the TRANSITION into busy. This used to run on every chunk
-  // of terminal output, rebuilding the rail's DOM dozens of times a second and
-  // restarting the CSS animation each time — which reads as a jittering dot
-  // rather than a pulse. State changed? repaint. Otherwise leave it alone.
-  if (!was) paintRail()
-}
-setInterval(() => {
-  const now = Date.now(); let changed = false
-  for (const [id,a] of activity){
-    if (a.busy && now - a.last > 2500){
-      a.busy = false; a.done = true; changed = true
-      if (!a.notified){ a.notified = true; notifyDone(id) }
-    }
-  }
-  if (changed) paintRail()
-}, 900)
+/* ── busy / done ──────────────────────────────────────────────────────────
+   State is derived SERVER-side in refresh() for every session, attached or not.
+   The old client-side markBusy()/2.5s-idle timer that used to live here is gone:
+   nothing rendered it any more, but it still fired notifications on its own —
+   bypassing the MIN_RUN/COOLDOWN debouncing — and by setting `notified` first it
+   could silently suppress the chime refresh() was about to make. */
 function notifyDone(id){
   const s = sessions.find(x => x.id === id)
   if (document.hasFocus() && id === active) return
@@ -497,7 +497,7 @@ async function dropOn(targetId, after){
   sessions = rest
   dragId = null
   paintRail()                                    // optimistic: no wait, no flicker
-  await api('/reorder?ids=' + sessions.map(x => x.id).join(','))
+  await post('/reorder?ids=' + sessions.map(x => x.id).join(','))
 }
 
 async function refresh(){
@@ -645,7 +645,7 @@ function startRename(el, s){
     const v = input.value.trim()
     if (v && v !== s.label){
       settled = true; renaming = false
-      await api('/rename?id=' + encodeURIComponent(s.id) + '&label=' + encodeURIComponent(v))
+      await post('/rename?id=' + encodeURIComponent(s.id) + '&label=' + encodeURIComponent(v))
       await refresh(); paintRail()
     } else restore()
   }
@@ -668,16 +668,20 @@ async function switchTo(id){
   paintRail(); connect(id)
 }
 async function newSession(cmd, cwd, skip){
-  const r = await api('/new?cmd=' + cmd + '&cwd=' + encodeURIComponent(cwd || '') +
+  const r = await post('/new?cmd=' + cmd + '&cwd=' + encodeURIComponent(cwd || '') +
     '&skip=' + (skip ? 1 : 0) + '&cols=' + term.cols + '&rows=' + term.rows)
   if (!r?.id) return
   hideOverlay(); await refresh()
   active = r.id; localStorage.setItem('oneterm-active', r.id); paintRail(); connect(r.id)
 }
 async function killSession(id){
-  await api('/kill?id=' + encodeURIComponent(id))
+  const wasAttached = id === wantId
+  await post('/kill?id=' + encodeURIComponent(id))
   activity.delete(id); await refresh()
-  if (sessions.length) connect(active); else { term.reset(); firstRun() }
+  if (!sessions.length) { term.reset(); firstRun() }
+  // Reconnecting unconditionally tore down a healthy socket and blanked the
+  // pane you were reading, just because a DIFFERENT session was killed.
+  else if (wasAttached) connect(active)
 }
 
 /* ── sheets ──────────────────────────────────────────────────────────────── */
@@ -813,7 +817,67 @@ $('themeBtn').onclick = () => {
   document.documentElement.dataset.theme = theme
   term.options.theme = THEMES[theme]
   lastIcon = ''; paintFavicon()
+  // COLORFGBG is handed to the pty at ATTACH time, so a program that picks its
+  // palette from it keeps the old one until we reattach. tmux holds the
+  // session, so this is lossless.
+  if (active) connect(active)
 }
+
+/* ── drag & drop / paste ──────────────────────────────────────────────────
+   A browser never hands you a dropped file's real path, so the bytes go to the
+   host, which writes them under ~/.oneterm/drops/<date>/ and returns the path.
+   We then type that path into the session — the same thing dragging a file into
+   Terminal.app does, and exactly what an agent needs to read it. */
+const shellQuote = (p) => /^[A-Za-z0-9._\/-]+$/.test(p) ? p : "'" + p.replace(/'/g, "'\\''") + "'"
+let dragDepth = 0
+function toast(msg, ms = 2600){
+  const t = $('droptoast'); t.textContent = msg; t.classList.add('show')
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms)
+}
+async function sendFiles(files){
+  if (!files.length) return
+  if (!ws || ws.readyState !== 1){ toast('no session attached'); return }
+  const paths = []
+  for (const f of files){
+    toast(`uploading ${f.name}…`, 60000)
+    try {
+      const r = await fetch('/drop?name=' + encodeURIComponent(f.name),
+        { method: 'POST', body: f })
+      const j = await r.json()
+      if (j?.path) paths.push(j.path)
+      else { toast(j?.error === 'too_large' ? `${f.name} is too large` : `couldn't add ${f.name}`); return }
+    } catch { toast(`couldn't add ${f.name}`); return }
+  }
+  // a trailing space so you can keep typing straight after the path
+  typeIn(paths.map(shellQuote).join(' ') + ' ')
+  toast(paths.length === 1 ? '1 file added' : paths.length + ' files added')
+}
+// counter, not a boolean: dragenter/leave fire for every child element
+addEventListener('dragenter', e => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+  dragDepth++; document.body.classList.add('dragging-file')
+})
+addEventListener('dragleave', () => {
+  if (--dragDepth <= 0){ dragDepth = 0; document.body.classList.remove('dragging-file') }
+})
+addEventListener('dragover', e => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+  e.preventDefault()                     // without this the browser navigates to the file
+  e.dataTransfer.dropEffect = 'copy'
+})
+addEventListener('drop', e => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return
+  e.preventDefault()
+  dragDepth = 0; document.body.classList.remove('dragging-file')
+  sendFiles([...e.dataTransfer.files])
+})
+// ⌘V of a screenshot straight from the clipboard, same lane
+addEventListener('paste', e => {
+  const files = [...(e.clipboardData?.files || [])]
+  if (!files.length) return
+  e.preventDefault()
+  sendFiles(files)
+})
 
 /* ── boot ────────────────────────────────────────────────────────────────── */
 const hideOverlay = () => { $('overlay').style.display = 'none' }

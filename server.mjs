@@ -15,7 +15,7 @@
  * can disagree with reality. `tmux ls` IS the list.
  */
 import { createServer } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, access } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -53,12 +53,16 @@ async function listSessions() {
   const fmt = ['#{session_name}', '#{session_created}', '#{session_attached}',
                '#{@oneterm_label}', '#{@oneterm_cwd}', '#{@oneterm_cmd}',
                '#{@oneterm_skip}', '#{@oneterm_order}',
-               '#{pane_current_path}', '#{pane_current_command}',
-               '#{session_activity}'].join(D)
+               '#{pane_current_path}', '#{pane_current_command}'].join(D)
   const out = await tmux(['list-sessions', '-F', fmt])
+  const FIELDS = 10
   return out.split('\n').filter(l => l.startsWith(PREFIX)).map(line => {
+    const parts = line.split(D)
+    // A row with the wrong field count means something injected the delimiter.
+    // Drop it rather than render shifted fields as if they were real.
+    if (parts.length !== FIELDS) { console.warn('[skip malformed row]', parts[0]); return null }
     const [name, created, attached, label, cwd, cmd, skip, order,
-           livePath, liveCmd, activity] = line.split(D)
+           livePath, liveCmd] = parts
     return { id: name.slice(PREFIX.length), name,
              created: Number(created) * 1000, attached: attached !== '0',
              label: label || name, cmd: cmd || 'shell',
@@ -69,11 +73,8 @@ async function listSessions() {
              // Showing the wish is how `rm -rf build/` hits the wrong tree.
              cwd: livePath || cwd || '',
              requested: cwd || '',
-             running: liveCmd || '',
-             // seconds since this pane last produced output — the signal that
-             // says "working" for sessions nothing is attached to
-             idleFor: activity ? Math.max(0, Math.round(Date.now()/1000 - Number(activity))) : null }
-  }).sort((a, b) => {
+             running: liveCmd || '' }
+  }).filter(Boolean).sort((a, b) => {
     // explicit drag order first; anything never dragged falls back to age
     const ao = a.order, bo = b.order
     if (ao !== null && bo !== null) return ao - bo
@@ -129,20 +130,29 @@ function settle(name, ms = 1800) {
   settleUntil.set(name, Date.now() + ms)
   lastTail.delete(name)          // next capture becomes the new baseline
 }
+let sessionCache = { at: 0, data: null }
+async function sessionsCached() {
+  // /sessions costs one spawn per session (capture-pane). A short cache keeps a
+  // second tab, or a double render, from multiplying that.
+  if (Date.now() - sessionCache.at < 700 && sessionCache.data) return sessionCache.data
+  const data = await annotateWaiting(await listSessions())
+  sessionCache = { at: Date.now(), data }
+  return data
+}
+
 async function annotateWaiting(list) {
   await Promise.all(list.map(async (s) => {
     try {
       const tail = await paneTail(s.name)
       s.waiting = WAITING.some(re => re.test(tail))
-      /* "Working" = the pane CHANGED since the last poll. tmux's
-       * #{session_activity} does not reliably tick for a detached session, so a
-       * busy agent read as idle. Comparing the pane tail is independent of
-       * tmux's bookkeeping and true whether or not anyone is attached. */
       const settling = Date.now() < (settleUntil.get(s.name) ?? 0)
       if (s.cmd === 'claude') {
         s.working = WORKING.some(re => re.test(tail))
       } else {
-        // a plain shell has no such marker, so fall back to "output changed"
+        /* Shells print no run marker, so fall back to "the pane changed since
+         * last poll". tmux's #{session_activity} was tried first and rejected:
+         * it does not reliably tick for a DETACHED session, so a busy agent
+         * read as idle. Comparing the tail works either way. */
         const prev = lastTail.get(s.name)
         lastTail.set(s.name, tail)
         s.working = !settling && prev !== undefined && prev !== tail
@@ -150,6 +160,11 @@ async function annotateWaiting(list) {
       if (s.working) s.waiting = false      // actively printing is never "needs you"
     } catch { s.waiting = false; s.working = false }
   }))
+  // These are keyed by session name and would otherwise grow forever in a
+  // process designed to run for weeks.
+  const live = new Set(list.map(s => s.name))
+  for (const k of lastTail.keys())    if (!live.has(k)) lastTail.delete(k)
+  for (const k of settleUntil.keys()) if (!live.has(k)) settleUntil.delete(k)
   return list
 }
 
@@ -179,12 +194,20 @@ async function createSession({ id, cmd, cwd, cols, rows, skip }) {
   await tmux(['set-option', '-t', name, 'status', 'off'])   // no tmux bar; our UI is the chrome
   await tmux(['set-option', '-t', name, 'mouse', 'on'])
   await tmux(['set-option', '-t', name, 'history-limit', '50000'])
+  // tmux() swallows failures, so without this /new could hand back an id for a
+  // session that was never created and the client would attach to nothing.
+  const live = await tmux(['list-sessions', '-F', '#{session_name}'])
+  if (!live.split('\n').includes(name))
+    throw new Error(`tmux refused to create the session (cwd: ${cwd})`)
   return name
 }
 
 /* ── skills + projects: what the ⌘K palette searches ──────────────────────── */
 
 const HOME = process.env.HOME
+const DROPS = join(HOME, '.oneterm', 'drops')
+const MAX_DROP = 64 * 1024 * 1024
+const exists = (f) => access(f).then(() => true).catch(() => false)
 async function readSkills() {
   // ~/.claude/skills/<name>/SKILL.md, plugin skills, and project-local ones.
   const roots = [join(HOME, '.claude/skills'), join(HOME, '.claude/plugins')]
@@ -301,15 +324,80 @@ const server = createServer(async (req, res) => {
   }
 })
 
+/* The host binds 127.0.0.1, which sounds like a security boundary and is not:
+ * your browser is INSIDE that perimeter. Without these checks any page in any
+ * tab could fire <img src="http://localhost:7331/new?cmd=claude&skip=1"> and
+ * start a real Claude Code process with --dangerously-skip-permissions on this
+ * machine, silently. An absent Host match also allows DNS rebinding. */
+const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i
+const ALLOWED_ORIGINS = new Set([
+  `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`,
+])
+const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop'])
+
+function guard(req, res) {
+  if (!LOCAL_HOST.test(req.headers.host || '')) {
+    res.writeHead(403, {'content-type':'application/json'})
+    res.end(JSON.stringify({ error: 'bad_host' })); return false
+  }
+  const origin = req.headers.origin
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
+    res.writeHead(403, {'content-type':'application/json'})
+    res.end(JSON.stringify({ error: 'forbidden_origin' })); return false
+  }
+  return true
+}
+
 async function route(req, res) {
+  if (!guard(req, res)) return
   const url = new URL(req.url, `http://${req.headers.host}`)
   const p = url.pathname
 
+  // Anything that changes state must be a POST: a GET is reachable from an
+  // <img>, a <script> or a stylesheet, none of which a CSRF check can see.
+  if (MUTATIONS.has(p) && req.method !== 'POST') {
+    res.writeHead(405, {'content-type':'application/json', 'allow':'POST'})
+    return res.end(JSON.stringify({ error: 'use_post' }))
+  }
+
   if (p === '/health')   return json(res, { ok: true, tmux: TMUX, pid: process.pid })
-  if (p === '/sessions') return json(res, await annotateWaiting(await listSessions()))
+  if (p === '/sessions') return json(res, await sessionsCached())
   if (p === '/skills')   return json(res, await readSkills())
   if (p === '/projects') return json(res, await readProjects())
 
+  if (MUTATIONS.has(p)) sessionCache = { at: 0, data: null }
+  /* Drag-and-drop parity with a native terminal. A browser never exposes a
+   * dropped file's real path — by design — so the bytes come to us, we write
+   * them somewhere stable, and the client types THAT path into the session.
+   * Same end result: you drop a screenshot, the agent gets a path it can read. */
+  if (p === '/drop') {
+    const raw  = (url.searchParams.get('name') || 'file').split(/[\\/]/).pop()
+    const safe = (raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'file').slice(0, 120)
+    const dir  = join(DROPS, new Date().toISOString().slice(0, 10))
+    await mkdir(dir, { recursive: true })
+
+    const chunks = []; let size = 0
+    for await (const c of req) {
+      size += c.length
+      if (size > MAX_DROP) {                    // don't let a stray drop fill the disk
+        res.writeHead(413, {'content-type':'application/json'})
+        return res.end(JSON.stringify({ error: 'too_large', limit: MAX_DROP }))
+      }
+      chunks.push(c)
+    }
+    if (!size) { res.writeHead(400); return res.end(JSON.stringify({ error: 'empty' })) }
+
+    // never clobber an earlier drop of the same name
+    const dot = safe.lastIndexOf('.')
+    const stem = dot > 0 ? safe.slice(0, dot) : safe
+    const ext  = dot > 0 ? safe.slice(dot) : ''
+    let target = join(dir, safe)
+    for (let n = 1; await exists(target); n++) target = join(dir, `${stem}-${n}${ext}`)
+
+    await writeFile(target, Buffer.concat(chunks))
+    console.log(`[drop] ${target} (${size} bytes)`)
+    return json(res, { path: target, bytes: size })
+  }
   if (p === '/reorder') {
     const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
     for (let i = 0; i < ids.length; i++)
@@ -317,7 +405,12 @@ async function route(req, res) {
     return json(res, { ok: true })
   }
   if (p === '/rename') {
-    const id = url.searchParams.get('id'), label = (url.searchParams.get('label') || '').slice(0, 60)
+    const id = url.searchParams.get('id')
+    /* The row format is delimiter-separated, so a label containing the
+     * delimiter shifts every field after it — a rename could forge the cwd and
+     * cmd the UI displays, undoing the whole point of reporting the LIVE path. */
+    const label = (url.searchParams.get('label') || '')
+      .replace(/[\r\n]+/g, ' ').split('|~|').join('/').slice(0, 60).trim()
     if (id && label) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_label', label])
     return json(res, { ok: true })
   }
