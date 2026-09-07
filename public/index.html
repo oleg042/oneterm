@@ -137,6 +137,46 @@ body.rail-dragging .sess{user-select:none}
 .railbtn .k{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--faint)}
 
 /* ── terminal ─────────────────────────────────────────────────────────────── */
+.work{flex:1 1 auto;min-height:0;display:flex}
+.doc{flex:0 0 clamp(340px, 34vw, 620px);min-width:0;display:flex;flex-direction:column;
+  background:var(--rail);border-left:1px solid var(--line)}
+.doc[hidden]{display:none}
+.dochead{display:flex;align-items:center;gap:10px;padding:11px 14px;
+  border-bottom:1px solid var(--line);flex:0 0 auto}
+.docname{font-family:var(--mono);font-size:12.5px;color:var(--ink);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.docscope{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--accent);flex:none}
+.docbtn{font-size:11.5px;color:var(--muted);padding:4px 9px;border-radius:var(--r);
+  border:1px solid var(--line2);white-space:nowrap;transition:all var(--sp) var(--ease)}
+.docbtn:hover{color:var(--accent);border-color:var(--accent)}
+.docbody{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px 18px 24px;
+  font-size:13px;line-height:1.62;color:var(--ink)}
+.docbody::-webkit-scrollbar{width:7px}
+.docbody::-webkit-scrollbar-thumb{background:var(--line2);border-radius:9px}
+.docbody h1,.docbody h2,.docbody h3{margin:20px 0 8px;font-weight:600;line-height:1.3}
+.docbody h1{font-size:17px} .docbody h2{font-size:15px} .docbody h3{font-size:13.5px;color:var(--muted)}
+.docbody h1:first-child,.docbody h2:first-child{margin-top:0}
+.docbody p,.docbody ul,.docbody ol{margin:0 0 12px}
+.docbody ul,.docbody ol{padding-left:20px}
+.docbody li{margin:3px 0}
+.docbody code{font-family:var(--mono);font-size:11.5px;background:var(--raise);
+  border-radius:3px;padding:1px 5px}
+.docbody pre{background:var(--raise);border-radius:var(--r);padding:11px 13px;
+  overflow-x:auto;margin:0 0 12px}
+.docbody pre code{background:none;padding:0;font-size:11.5px;line-height:1.5}
+.docbody blockquote{margin:0 0 12px;padding:2px 0 2px 12px;border-left:2px solid var(--line2);
+  color:var(--muted)}
+.docbody hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+.docbody a{color:var(--accent)}
+.docbody table{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 12px}
+.docbody th,.docbody td{border:1px solid var(--line);padding:5px 8px;text-align:left}
+.docfoot{flex:0 0 auto;padding:8px 14px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:9.5px;color:var(--faint);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .open{flex:none;width:22px;text-align:center;color:var(--line2);font-size:12px;
+  border-radius:3px;transition:color var(--sp) var(--ease)}
+.row .open:hover{color:var(--accent)}
 .stack{flex:1 1 auto;min-width:0;height:100%;display:flex;flex-direction:column;
   background:var(--paper);overflow:hidden}
 main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
@@ -243,12 +283,25 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
 </aside>
 
 <div class="stack">
+  <div class="work">
   <main>
     <div id="term"></div>
     <div class="dropzone"><span>Drop files to add their paths &mdash; <b>images, docs, screenshots</b></span></div>
     <div class="droptoast" id="droptoast"></div>
     <div class="overlay" id="overlay" style="display:none"></div>
   </main>
+  <aside class="doc" id="doc" hidden>
+    <div class="dochead">
+      <span class="docname" id="docName"></span>
+      <span class="docscope" id="docScope"></span>
+      <span style="flex:1"></span>
+      <button class="docbtn" id="docEdit" title="Hand this file to the session">Ask Claude to edit</button>
+      <button class="docbtn" id="docClose" title="Close">&#10005;</button>
+    </div>
+    <div class="docbody" id="docBody"></div>
+    <div class="docfoot" id="docPath"></div>
+  </aside>
+  </div>
   <footer>
     <span><i class="dot" id="dot"></i> <span id="conn">connecting</span></span>
     <span id="cwd"></span>
@@ -857,6 +910,7 @@ function render(){
     '<div class="row' + (i === sel ? ' sel' : '') + (it.dim ? ' dim' : '') + '" data-i="' + i + '">' +
     (starred ? '<span class="star' + (favs.has(it.name) ? ' on' : '') + '" data-fav="' +
        esc(it.name) + '" title="favourite">' + (favs.has(it.name) ? '★' : '☆') + '</span>' : '') +
+    (starred ? '<span class="open" data-open="' + i + '" title="Read this skill">&#9744;</span>' : '') +
     '<span class="kind">' + it.kind + '</span><span class="t">' + esc(it.t) + '</span>' +
     '<span class="s">' + esc(it.s || '') + '</span></div>').join('')
     : '<div class="empty">' +
@@ -866,6 +920,13 @@ function render(){
     el.onclick = () => go(Number(el.dataset.i))
     const st = el.querySelector('.star')
     if (st) st.onclick = e => { e.stopPropagation(); toggleFav(st.dataset.fav) }
+    const op = el.querySelector('.open')
+    if (op) op.onclick = e => {
+      e.stopPropagation()
+      const it = items[Number(op.dataset.open)]
+      const k = skills.find(x => x.name === it.name)
+      if (k){ closeSheet(); openDoc(k) }
+    }
   }
   if (starred) $('skillTabCount').textContent =
     skillTab === 'fav' ? favs.size + ' favourite' + (favs.size === 1 ? '' : 's')
@@ -941,6 +1002,97 @@ $('themeBtn').onclick = () => {
   // palette from it keeps the old one until we reattach. tmux holds the
   // session, so this is lossless.
   if (active) connect(active)
+}
+
+/* ── skill viewer ─────────────────────────────────────────────────────────
+   Opens BESIDE the terminal rather than over it: the terminal keeps running and
+   reflows to the remaining width, so you can read a skill and keep working. The
+   markdown is rendered here rather than by a library — the whole app ships no
+   runtime dependencies, and everything is escaped before any markup is added,
+   because file contents are never trusted input. */
+let docOpen = null
+
+const mdEsc = t => t.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+function mdInline(t){
+  return mdEsc(t)
+    .replace(/`([^`]+)`/g, (_,c) => '<code>' + c + '</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|\W)\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,
+      (_,t2,u) => '<a href="' + mdEsc(u) + '" target="_blank" rel="noreferrer">' + t2 + '</a>')
+}
+function renderMd(src){
+  const out = []
+  const lines = src.split(/\r?\n/)
+  let i = 0, list = null
+  const closeList = () => { if (list){ out.push('</' + list + '>'); list = null } }
+  while (i < lines.length){
+    const ln = lines[i]
+    // front matter, shown as a quiet header block rather than raw dashes
+    if (i === 0 && /^---\s*$/.test(ln)){
+      const buf = []; i++
+      while (i < lines.length && !/^---\s*$/.test(lines[i])) buf.push(lines[i++])
+      i++
+      closeList()
+      out.push('<pre><code>' + mdEsc(buf.join('\n')) + '</code></pre>')
+      continue
+    }
+    const fence = /^```(.*)$/.exec(ln)
+    if (fence){
+      const buf = []; i++
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++])
+      i++
+      closeList(); out.push('<pre><code>' + mdEsc(buf.join('\n')) + '</code></pre>')
+      continue
+    }
+    const h = /^(#{1,6})\s+(.*)$/.exec(ln)
+    if (h){ closeList()
+      const lvl = Math.min(h[1].length, 3)
+      out.push('<h' + lvl + '>' + mdInline(h[2]) + '</h' + lvl + '>'); i++; continue }
+    if (/^(---|\*\*\*|___)\s*$/.test(ln)){ closeList(); out.push('<hr>'); i++; continue }
+    const q = /^>\s?(.*)$/.exec(ln)
+    if (q){ closeList(); out.push('<blockquote>' + mdInline(q[1]) + '</blockquote>'); i++; continue }
+    const ul = /^\s*[-*+]\s+(.*)$/.exec(ln)
+    const ol = /^\s*\d+[.)]\s+(.*)$/.exec(ln)
+    if (ul || ol){
+      const want = ul ? 'ul' : 'ol'
+      if (list !== want){ closeList(); out.push('<' + want + '>'); list = want }
+      out.push('<li>' + mdInline((ul || ol)[1]) + '</li>'); i++; continue
+    }
+    if (!ln.trim()){ closeList(); i++; continue }
+    closeList()
+    const para = [ln]; i++
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|```|>|\s*[-*+]\s|\s*\d+[.)]\s)/.test(lines[i]))
+      para.push(lines[i++])
+    out.push('<p>' + mdInline(para.join(' ')) + '</p>')
+  }
+  closeList()
+  return out.join('')
+}
+
+async function openDoc(skill){
+  const r = await api('/skill?path=' + encodeURIComponent(skill.path))
+  if (!r?.text){ toast("couldn't open that skill"); return }
+  docOpen = skill
+  $('docName').textContent  = '/' + skill.name
+  $('docScope').textContent = skill.scope === 'project' ? skill.project
+                            : skill.kind === 'command' ? 'command' : 'global'
+  $('docPath').textContent  = tilde(skill.path)
+  $('docBody').innerHTML    = renderMd(r.text)
+  $('docBody').scrollTop = 0
+  $('doc').hidden = false
+  scheduleResize()                      // the terminal keeps working, just narrower
+}
+function closeDoc(){
+  if (!docOpen) return
+  docOpen = null; $('doc').hidden = true; scheduleResize(); term.focus()
+}
+$('docClose').onclick = closeDoc
+$('docEdit').onclick = () => {
+  if (!docOpen) return
+  // no auto-submit: you finish the sentence, same as inserting a skill
+  typeIn('Open ' + docOpen.path + ' and ')
+  toast('path handed to the session — say what to change')
 }
 
 /* ── drag & drop / paste ──────────────────────────────────────────────────

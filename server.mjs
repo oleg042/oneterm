@@ -120,6 +120,10 @@ const WORKING = [
   /\(\d+s\s*[·)]/,             // the live elapsed timer, e.g. "(7s ·"
   /[✻✳✢✽✺✹]\s+\S+…/,          // spinner glyph + word + ellipsis
 ]
+/* Paths we are willing to read. Built from the skills index, so /skill can
+ * never be talked into reading an arbitrary file — it is an allowlist, not a
+ * sanitiser, which is the only version of this that stays safe. */
+const readable = new Set()
 const lastTail = new Map()
 /* Attaching or resizing a pane makes tmux REFLOW its contents, which changes
  * the captured text without a single byte of new output. The tail-diff can't
@@ -256,6 +260,7 @@ async function readSkills() {
     } catch {}
   }
 
+  for (const k of out) if (k.path) readable.add(k.path)
   const seen = new Set()
   return out.filter(s => {
     // a project skill and a global one may share a name; keep both, keyed by scope
@@ -425,6 +430,20 @@ async function route(req, res) {
     await writeFile(target, Buffer.concat(chunks))
     console.log(`[drop] ${target} (${size} bytes)`)
     return json(res, { path: target, bytes: size })
+  }
+  if (p === '/skill') {
+    const f = url.searchParams.get('path') || ''
+    if (!readable.has(f)) {                       // not in the index → not readable
+      res.writeHead(404, {'content-type':'application/json'})
+      return res.end(JSON.stringify({ error: 'unknown_skill' }))
+    }
+    try {
+      const text = await readFile(f, 'utf8')
+      return json(res, { path: f, text })
+    } catch (e) {
+      res.writeHead(404, {'content-type':'application/json'})
+      return res.end(JSON.stringify({ error: String(e.message) }))
+    }
   }
   if (p === '/reorder') {
     const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
