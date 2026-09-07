@@ -239,9 +239,37 @@ async function readSkills() {
       } catch {}
     }
   }
+  /* Project-level skills live in <project>/.claude/skills. Claude Code only
+   * offers them while you are IN that project, so they are tagged with their
+   * project and the client shows them only for a session whose cwd is inside
+   * it — listing them globally would advertise skills that will not fire. */
+  const projRoot = join(HOME, 'Projects')
+  for (const f of await findUnder(projRoot, 'SKILL.md', 6)) {
+    if (!/\/\.claude\/skills\//.test(f)) continue
+    const project = f.slice(projRoot.length + 1).split('/')[0]
+    if (project.startsWith('.')) continue
+    try {
+      const meta = parseFrontmatter(await readFile(f, 'utf8'))
+      if (meta.name) out.push({ name: meta.name, desc: meta.description || '', path: f,
+                                scope: 'project', project,
+                                dir: join(projRoot, project) })
+    } catch {}
+  }
+
   const seen = new Set()
-  return out.filter(s => !seen.has(s.name) && seen.add(s.name))
-            .sort((a, b) => a.name.localeCompare(b.name))
+  return out.filter(s => {
+    // a project skill and a global one may share a name; keep both, keyed by scope
+    const k = (s.scope || 'global') + ':' + s.name
+    return !seen.has(k) && seen.add(k)
+  }).sort((a, b) => a.name.localeCompare(b.name))
+}
+
+async function findUnder(root, filename, depth) {
+  try {
+    const { stdout } = await execFileP('find',
+      [root, '-maxdepth', String(depth), '-name', filename], { maxBuffer: 8e6 })
+    return stdout.split('\n').filter(Boolean)
+  } catch { return [] }
 }
 
 async function findMd(root) {
