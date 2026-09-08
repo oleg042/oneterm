@@ -478,6 +478,51 @@ const post = p => fetch(p, { method: 'POST' }).then(r => r.json()).catch(() => n
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const tilde = p => (p||'').replace(/^\/Users\/[^/]+/, '~')
 
+/* ── input, including while the socket is down ────────────────────────────
+   Both senders used to be `if (ws?.readyState === 1) send(...)` with no else,
+   so anything typed during a reconnect — and every host restart causes one —
+   was discarded in total silence. Buffer it and flush on reconnect instead.
+
+   Keyed by SESSION id, which is the part that matters: flushing your keystrokes
+   into whatever session happened to attach next would type your words into a
+   different agent. If the session it was meant for is gone, the text is dropped
+   LOUDLY rather than delivered to the wrong place. */
+let pending = { id: null, chunks: [], bytes: 0, over: false }
+const PENDING_MAX = 64 * 1024
+const clearPending = () => { pending = { id: null, chunks: [], bytes: 0, over: false } }
+
+function sendIn(d){
+  if (ws?.readyState === 1){ ws.send(JSON.stringify({t:'in', d})); return true }
+  const id = wantId ?? active
+  if (!id) return false
+  if (pending.id !== id){ clearPending(); pending.id = id }
+  if (pending.bytes + d.length > PENDING_MAX){
+    pending.over = true
+    toast('input buffer full — keystrokes are being dropped', 5000)
+    return false
+  }
+  pending.chunks.push(d); pending.bytes += d.length
+  setConn(false, `reconnecting — holding ${pending.bytes} chars`)
+  return false
+}
+function flushPending(id){
+  if (!pending.chunks.length) return
+  if (pending.id !== id){            // never type it into the wrong session
+    toast(`${pending.bytes} characters typed for another session were not sent`, 6000)
+    clearPending(); return
+  }
+  const d = pending.chunks.join(''), n = pending.bytes, over = pending.over
+  clearPending()
+  ws.send(JSON.stringify({t:'in', d}))
+  toast(over ? `reconnected — sent ${n} chars, but some were dropped`
+             : `reconnected — sent ${n} buffered chars`)
+}
+function dropPending(id, why){
+  if (pending.id !== id || !pending.chunks.length) return
+  toast(`${pending.bytes} characters you typed were NOT delivered — ${why}`, 8000)
+  clearPending()
+}
+
 /* ── connection ──────────────────────────────────────────────────────────── */
 function connect(id){
   wantId = id; clearTimeout(retryTimer)
@@ -490,7 +535,8 @@ function connect(id){
     retry = 0
     const m = sessions.find(x => x.id === id)
     setConn(true, m ? (m.cmd === 'claude' ? 'claude' : 'shell') : 'connected')
-    sendResize(); term.focus() }
+    sendResize(); term.focus()
+    flushPending(id) }
   sock.onmessage = e => { if (ws===sock) term.write(e.data) }
   sock.onclose = async (ev) => {
     if (ws !== sock) return
@@ -500,6 +546,7 @@ function connect(id){
     if (ev.code === 4404){
       ws = null; wantId = null; retry = 0
       setConn(false, 'session ended')
+      dropPending(id, 'the session ended')
       activity.delete(id)
       await refresh()
       const next = sessions.find(s2 => s2.id !== id)
@@ -568,9 +615,18 @@ addEventListener('resize', scheduleResize)
    the REPORT is what actually doubles the scroll. 64/65 are wheel up/down and
    66/67 horizontal; clicks, drags and motion are left alone. */
 const WHEEL_REPORT = /^\x1b\[<6[4-7];\d+;\d+[Mm]$/
+const MOUSE_REPORT = /^\x1b\[<\d+;\d+;\d+[Mm]$/
 term.onData(d => {
-  if (ws?.readyState !== 1) return
-  ws.send(JSON.stringify({t:'in', d: WHEEL_REPORT.test(d) ? d + d : d}))
+  /* Mouse reports describe a moment — a click at these coordinates, a wheel
+     notch now. Buffering one through a reconnect and replaying it later would
+     click somewhere the pane no longer is, so these are sent live or not at
+     all. Typing is the thing worth holding onto. */
+  if (MOUSE_REPORT.test(d)){
+    if (ws?.readyState === 1)
+      ws.send(JSON.stringify({t:'in', d: WHEEL_REPORT.test(d) ? d + d : d}))
+    return
+  }
+  sendIn(d)
 })
 
 /* ── busy / done ──────────────────────────────────────────────────────────
@@ -1059,7 +1115,7 @@ async function checkTypedPath(){
   typedPathChecked = q; typedPathOk = r?.ok ? q : null
   render()
 }
-function typeIn(t){ if (ws?.readyState === 1) ws.send(JSON.stringify({t:'in',d:t})); term.focus() }
+function typeIn(t){ sendIn(t); term.focus() }
 /* Unranked subsequence over name+description+path meant a 6-char query barely
    filtered: "commit" matched "cosmic-drift" (c-o-m-i-t) and every project with
    a 'k' in ~/Projects. Score by WHERE it matched, weight the name far above the

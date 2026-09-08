@@ -641,6 +641,28 @@ wss.on('connection', async (ws, req) => {
   if (!id) { ws.close(); return }
 
   const name = PREFIX + id
+
+  /* Register the message listener BEFORE the awaits below. `ws` does not hold
+   * messages for a listener that is not attached yet, and there is a `tmux ls`
+   * spawn AND a pty spawn between the socket opening and where this used to
+   * live — so everything the client sent on open went on the floor: the first
+   * resize, and the reconnect flush of keystrokes typed while the socket was
+   * down. Queue here, drain once the pty exists. */
+  let term = null
+  const early = []
+  const apply = m => {
+    if (m.t === 'in') term.write(m.d)
+    else if (m.t === 'resize') {
+      try { term.resize(Math.max(2, m.cols|0), Math.max(1, m.rows|0)) } catch {}
+      settle(name)               // a resize reflows the pane; that is not work
+    }
+  }
+  ws.on('message', raw => {
+    let m; try { m = JSON.parse(raw.toString()) } catch { return }
+    if (!term){ if (early.length < 200) early.push(m); return }
+    apply(m)
+  })
+
   const sessions = await listSessions()
   if (!sessions.some(s => s.id === id)) {
     // 4404 = this session does not exist. A plain close is indistinguishable
@@ -654,7 +676,6 @@ wss.on('connection', async (ws, req) => {
   // each auto-reconnects — an infinite reattach war that reads as the whole
   // screen strobing. Without -d they simply mirror, and `window-size latest`
   // (set at creation) means the most recent client decides the pane size.
-  let term
   try {
     term = pty.spawn(TMUX, ['-u', 'attach-session', '-t', name], {
       name: 'xterm-256color', cols, rows, cwd: HOME,
@@ -672,17 +693,14 @@ wss.on('connection', async (ws, req) => {
   settle(name)
   console.log(`[attach] ${name} ${cols}x${rows}`)
 
+  // Anything that arrived while tmux was spawning, in the order it was sent.
+  if (early.length) console.log(`[attach] ${name} draining ${early.length} early msg`)
+  for (const m of early) apply(m)
+  early.length = 0
+
   term.onData(d => { if (ws.readyState === 1) ws.send(d) })
   term.onExit(() => { if (ws.readyState === 1) ws.close() })
 
-  ws.on('message', raw => {
-    let m; try { m = JSON.parse(raw.toString()) } catch { return }
-    if (m.t === 'in') term.write(m.d)
-    else if (m.t === 'resize') {
-      try { term.resize(Math.max(2, m.cols|0), Math.max(1, m.rows|0)) } catch {}
-      settle(name)               // a resize reflows the pane; that is not work
-    }
-  })
   // Detaching the PTY client leaves tmux — and everything in it — running.
   ws.on('close', () => { try { term.kill() } catch {} ; console.log(`[detach] ${name}`) })
 })
