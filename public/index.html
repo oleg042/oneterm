@@ -616,6 +616,19 @@ function unlockAudio(){
 }
 for (const ev of ['pointerdown','keydown']) addEventListener(ev, unlockAudio)
 
+/* Every open tab runs its own copy of this client, polls independently and
+   reached its own conclusions — so N tabs meant N chimes for one event. The
+   claim is a shared timestamp in localStorage: the first tab to write it wins
+   and the rest stay quiet. */
+function claimChime(key, windowMs = 4000){
+  try {
+    const k = 'oneterm-chime:' + key, now = Date.now()
+    if (now - Number(localStorage.getItem(k) || 0) < windowMs) return false
+    localStorage.setItem(k, String(now))
+    return true
+  } catch { return true }
+}
+
 function tone(steps, gain = 0.06){
   if (!soundOn) return
   unlockAudio()
@@ -728,27 +741,35 @@ async function refresh(){
     if (s.working){
       if (!a.wasWorking) a.workStart = now       // start of a real run
       a.doneUnseen = false; a.notified = false
+      a.quiet = 0
+    } else if (a.wasWorking) {
+      a.quiet = (a.quiet ?? 0) + 1
     }
-    // finished: was working, now neither working nor blocked, and it ran long enough
-    if (a.wasWorking && !s.working && !s.waiting){
+    /* The server latches "working" for 5s past the last positive sample, so by
+       the time it reports not-working the run has genuinely ended. One
+       confirming poll on top of that is enough; two only delayed the chime. */
+    if (a.wasWorking && !s.working && !s.waiting && a.quiet >= 1){
       const ranFor = now - (a.workStart ?? now)
       if (ranFor >= MIN_RUN){
         a.doneUnseen = true
         if (!a.notified && now - (a.lastChime ?? 0) > COOLDOWN){
           a.notified = true; a.lastChime = now
-          notifyDone(s.id); soundDone()
+          notifyDone(s.id)
+          if (claimChime('done:' + s.id)) soundDone()
         }
       }
+      a.wasWorking = false      // the run is over; do not re-evaluate it
     }
     // blocked on a human: only after it has held for two polls running
     a.waitStreak = s.waiting ? (a.waitStreak ?? 0) + 1 : 0
     if (a.waitStreak === HOLD && now - (a.lastChime ?? 0) > COOLDOWN){
       a.lastChime = now
-      soundNeeds()
+      if (claimChime('wait:' + s.id)) soundNeeds()
       if (window.Notification?.permission === 'granted')
         new Notification('oneterm', { body: s.label + ' needs you', tag: s.id + '-wait' })
     }
-    a.wasWorking = s.working; a.wasWaiting = s.waiting
+    if (s.working) a.wasWorking = true
+    a.wasWaiting = s.waiting
     activity.set(s.id, a)
   }
   const sig = JSON.stringify(list.map(s => [s.id, s.label, s.cwd, s.waiting, s.working, s.cmd, s.skip,

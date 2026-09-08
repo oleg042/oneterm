@@ -116,26 +116,25 @@ async function paneTail(name) {
  * forever and a session stuck on "working". Detect the POSITIVE markers it
  * prints only while a turn is running instead. */
 const WORKING = [
-  /esc to interrupt/i,        // shown for the whole duration of a run
-  /\(\d+s\s*[·)]/,             // the live elapsed timer, e.g. "(7s ·"
-  /[✻✳✢✽✺✹]\s+\S+…/,          // spinner glyph + word + ellipsis
+  /esc to interrupt/i,
+  /still (thinking|working)/i,
+  /* The elapsed timer is multi-unit once a run passes a minute — "(3m 9s ·" —
+   * so a \(\d+s pattern stops matching exactly when a run is long enough to
+   * care about. */
+  /\((?:\d+[hms]\s*)+[·)]/,
+  /* The spinner GLYPH animates through a set we cannot enumerate reliably, so
+   * match the SHAPE instead: a mark, a word ending in an ellipsis, then the
+   * timer's opening paren. Enumerating glyphs made detection blink at
+   * animation speed, and every blink read as "the run finished". */
+  /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*\(/m,
 ]
-/* Paths we are willing to read. Built from the skills index, so /skill can
- * never be talked into reading an arbitrary file — it is an allowlist, not a
- * sanitiser, which is the only version of this that stays safe. */
-const readable = new Set()
-let skillCache = { at: 0, data: null }
-/* readSkills() is what fills `readable`, so /skill used to 404 for everything
- * until something had listed skills in THIS process. A host restart (a deploy,
- * a crash, launchd) therefore broke every "read this skill" click on an
- * already-open page. The index is built on demand now, and cached, so no
- * endpoint depends on another having run first. */
-async function skillIndex() {
-  if (Date.now() - skillCache.at < 30_000 && skillCache.data) return skillCache.data
-  const data = await readSkills()
-  skillCache = { at: Date.now(), data }
-  return data
-}
+/* A run is detected by sampling an ANIMATING pane, so a single miss is a
+ * blink, not an ending. Keep "working" latched for a few seconds after the last
+ * positive match: the state stops flickering, the rail dot stops stuttering,
+ * and — the point — the transition to "not working" happens exactly once, when
+ * the agent has really stopped. */
+const WORK_LATCH_MS = 5000
+const workingUntil = new Map()
 const lastTail = new Map()
 /* Attaching or resizing a pane makes tmux REFLOW its contents, which changes
  * the captured text without a single byte of new output. The tail-diff can't
@@ -163,7 +162,8 @@ async function annotateWaiting(list) {
       s.waiting = WAITING.some(re => re.test(tail))
       const settling = Date.now() < (settleUntil.get(s.name) ?? 0)
       if (s.cmd === 'claude') {
-        s.working = WORKING.some(re => re.test(tail))
+        if (WORKING.some(re => re.test(tail))) workingUntil.set(s.name, Date.now() + WORK_LATCH_MS)
+        s.working = Date.now() < (workingUntil.get(s.name) ?? 0)
       } else {
         /* Shells print no run marker, so fall back to "the pane changed since
          * last poll". tmux's #{session_activity} was tried first and rejected:
@@ -179,8 +179,9 @@ async function annotateWaiting(list) {
   // These are keyed by session name and would otherwise grow forever in a
   // process designed to run for weeks.
   const live = new Set(list.map(s => s.name))
-  for (const k of lastTail.keys())    if (!live.has(k)) lastTail.delete(k)
-  for (const k of settleUntil.keys()) if (!live.has(k)) settleUntil.delete(k)
+  for (const k of lastTail.keys())     if (!live.has(k)) lastTail.delete(k)
+  for (const k of settleUntil.keys())  if (!live.has(k)) settleUntil.delete(k)
+  for (const k of workingUntil.keys()) if (!live.has(k)) workingUntil.delete(k)
   return list
 }
 
