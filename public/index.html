@@ -646,21 +646,28 @@ function tone(steps, gain = 0.06){
   unlockAudio()
   if (!audioCtx || audioCtx.state !== 'running') return
   const t0 = audioCtx.currentTime
-  steps.forEach(([freq, at, dur], i) => {
+  /* A triangle carries noticeably more presence than a sine at the same peak —
+     it has odd harmonics, so it cuts through room noise instead of sitting
+     under it. A limiter keeps the extra level from clipping. */
+  const out = audioCtx.createDynamicsCompressor()
+  out.threshold.value = -6; out.knee.value = 6; out.ratio.value = 12
+  out.attack.value = 0.002; out.release.value = 0.12
+  out.connect(audioCtx.destination)
+  steps.forEach(([freq, at, dur]) => {
     const osc = audioCtx.createOscillator(), g = audioCtx.createGain()
-    osc.type = 'sine'; osc.frequency.value = freq
+    osc.type = 'triangle'; osc.frequency.value = freq
     // short attack + exponential decay reads as a soft wooden knock, not a beep
     g.gain.setValueAtTime(0.0001, t0 + at)
     g.gain.exponentialRampToValueAtTime(gain, t0 + at + 0.012)
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur)
-    osc.connect(g); g.connect(audioCtx.destination)
+    osc.connect(g); g.connect(out)
     osc.start(t0 + at); osc.stop(t0 + at + dur + 0.02)
   })
 }
-// finished: a soft two-note fall, easy to ignore
-const soundDone  = () => tone([[784, 0, 0.18], [588, 0.12, 0.26]], 0.16)
-// blocked on you: rising and repeated, meant to be noticed
-const soundNeeds = () => tone([[523, 0, 0.15], [784, 0.11, 0.15], [1046, 0.22, 0.26]], 0.24)
+// finished: a two-note fall — clearly audible, still not startling
+const soundDone  = () => tone([[784, 0, 0.20], [588, 0.13, 0.30]], 0.55)
+// blocked on you: rising, three notes, the loudest thing the app does
+const soundNeeds = () => tone([[523, 0, 0.16], [784, 0.12, 0.16], [1046, 0.24, 0.32]], 0.85)
 
 /* ── rail ────────────────────────────────────────────────────────────────── */
 let dragId = null, armedKill = null, armTimer = null, lastSig = '', renaming = false
