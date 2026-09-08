@@ -72,6 +72,10 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 .slist::-webkit-scrollbar-track{background:transparent}
 
 .sess{position:relative;display:flex;align-items:baseline;gap:9px;width:100%;
+  /* These rows became <div role=button> so Space would not activate them and
+     eat spaces typed into the rename field. That also dropped the button's
+     default cursor, leaving an I-beam over the row and its close control. */
+  cursor:default;user-select:none;
   padding:9px 22px 9px 12px;border-radius:var(--r);text-align:left;overflow:hidden;
   color:var(--muted);transition:background var(--sp) var(--ease),color var(--sp) var(--ease)}
 .sess:hover{background:var(--raise);color:var(--ink)}
@@ -113,7 +117,7 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 .sess .warn{flex:none;color:var(--warn);font-size:10px;font-style:normal}
 .sess .p{font-family:var(--mono);font-size:10px;color:var(--faint);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
-.sess .x{position:absolute;right:6px;top:50%;transform:translateY(-50%);opacity:0;
+.sess .x{cursor:pointer;position:absolute;right:6px;top:50%;transform:translateY(-50%);opacity:0;
   width:18px;height:18px;line-height:1;border-radius:3px;color:var(--faint);
   font-size:14px;transition:opacity var(--sp) var(--ease)}
 .sess:hover .x{opacity:1}
@@ -129,7 +133,7 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 body.rail-dragging{cursor:grabbing}
 body.rail-dragging .sess{user-select:none}
 @media (prefers-reduced-motion:reduce){.sess{transition:none}}
-.rename{width:100%;background:var(--sink);border:1px solid var(--accent);
+.rename{cursor:text;user-select:text;width:100%;background:var(--sink);border:1px solid var(--accent);
   border-radius:3px;padding:3px 6px;font-family:var(--ui);font-size:13px;
   color:var(--ink);outline:none}
 
