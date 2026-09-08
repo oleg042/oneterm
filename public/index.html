@@ -598,19 +598,21 @@ function paintFavicon(){
   $('favicon').href = c.toDataURL('image/png')
 }
 
-/* The title is the only thing visible when the tab is backgrounded, so it must
-   describe the CURRENT state — it used to be written once on notify and then
-   go stale, naming a session you had already switched away from. */
+/* The title names the session you are IN, always and exactly.
+   It used to lead with whichever OTHER session had news, so a row of oneterm
+   tabs all read "✓ oneawaybuild done" and none of them told you which session
+   it was — the one thing a tab strip exists to do. Other sessions still get a
+   compact counter on the end, and the favicon carries the full colour state. */
 function paintTitle(){
-  const waiting = sessions.filter(s => s.waiting)
-  const cur = sessions.find(s => s.id === active)
-  const finished = sessions.filter(s =>
-    (activity.get(s.id) || {}).doneUnseen && s.id !== active)
-  document.title = waiting.length
-    ? '● ' + (waiting.length > 1 ? waiting.length + ' need you' : waiting[0].label + ' needs you')
-    : finished.length
-    ? '✓ ' + (finished.length > 1 ? finished.length + ' done' : finished[0].label + ' done')
-    : (cur ? cur.label + ' — oneterm' : 'oneterm')
+  const cur    = sessions.find(s => s.id === active)
+  const others = sessions.filter(s => s.id !== active)
+  const waiting  = others.filter(s => s.waiting).length
+  const finished = others.filter(s => (activity.get(s.id) || {}).doneUnseen).length
+  // Only "blocked on you" earns a glyph on the current session: a marker that
+  // toggled with every working/idle flip would flicker in the tab strip.
+  const mark = cur && cur.waiting ? '● ' : ''
+  const tail = waiting ? `  ·  ●${waiting}` : finished ? `  ·  ✓${finished}` : ''
+  document.title = mark + (cur ? cur.label : 'oneterm') + tail
   paintFavicon()
 }
 
