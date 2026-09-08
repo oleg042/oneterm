@@ -374,7 +374,7 @@ const VENDOR = {
   '/vendor/xterm.js':        '@xterm/xterm/lib/xterm.js',
   '/vendor/xterm.css':       '@xterm/xterm/css/xterm.css',
   '/vendor/addon-fit.js':    '@xterm/addon-fit/lib/addon-fit.js',
-  '/vendor/addon-webgl.js':  '@xterm/addon-webgl/lib/addon-webgl.js',
+  '/vendor/addon-canvas.js': '@xterm/addon-canvas/lib/addon-canvas.js',
   '/vendor/addon-search.js': '@xterm/addon-search/lib/addon-search.js',
 }
 const TYPES = { '.html':'text/html', '.css':'text/css', '.js':'text/javascript',

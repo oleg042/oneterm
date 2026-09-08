@@ -8,6 +8,7 @@
     "prestart": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {
+    "@xterm/addon-canvas": "^0.7.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-search": "^0.15.0",
     "@xterm/addon-webgl": "^0.18.0",
@@ -15,5 +16,7 @@
     "node-pty": "^1.0.0",
     "ws": "^8.18.0"
   },
-  "allowScripts": { "node-pty@1.1.0": true }
+  "allowScripts": {
+    "node-pty@1.1.0": true
+  }
 }

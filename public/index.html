@@ -387,6 +387,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
+<script src="/vendor/addon-canvas.js"></script>
 <script>
 const $ = id => document.getElementById(id)
 /* terminal palettes drawn from the same warm neutrals, so the rectangle
@@ -426,10 +427,27 @@ const term = new Terminal({
 })
 const fit = new FitAddon.FitAddon()
 term.loadAddon(fit); term.open($('term'))
-/* NO WebGL renderer. It caches cell dimensions, so after a layout change
-   (collapsing the rail) fit() kept proposing the old column count and the
-   freed width rendered as garbage. The DOM renderer re-measures correctly.
-   Correctness over raw throughput: this is a daily driver, not a benchmark. */
+/* The CANVAS renderer, for one specific reason: it implements customGlyphs,
+   which draws Block Elements and Box Drawing as filled rectangles snapped to
+   the cell instead of painting font glyphs. The cell here is 7.798px wide —
+   fractional — so font-drawn blocks land on sub-pixel boundaries and adjacent
+   ones do not quite meet, which is the stitching visible through the Claude
+   Code mascot. Native terminals draw these the same way.
+   (WebGL also does this but cached stale dimensions across layout changes and
+   painted garbage into the freed width; canvas re-measures correctly.) */
+/* The atlas is rasterised from whatever font is available AT THAT MOMENT. Load
+   the renderer before the webfont arrives and it bakes the fallback's metrics,
+   which shows up as a few glyphs rendering undersized and off-baseline. So:
+   wait for the font, then attach the renderer, then rebuild the atlas. */
+document.fonts.ready.then(async () => {
+  try { await document.fonts.load('13px "JetBrains Mono"') } catch {}
+  try { await document.fonts.load('bold 13px "JetBrains Mono"') } catch {}
+  try {
+    term.loadAddon(new CanvasAddon.CanvasAddon())
+    term.clearTextureAtlas?.()
+  } catch (e) { console.warn('canvas renderer unavailable, using DOM', e) }
+  scheduleResize()
+})
 
 let sessions = [], active = localStorage.getItem('oneterm-active'), ws = null
 let retry = 0, retryTimer = null, wantId = null
