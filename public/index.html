@@ -193,7 +193,7 @@ body.rail-dragging .sess{user-select:none}
 .docfoot{flex:0 0 auto;padding:8px 14px;border-top:1px solid var(--line);
   font-family:var(--mono);font-size:9.5px;color:var(--faint);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.row .open{flex:none;width:22px;text-align:center;color:var(--muted);font-size:12px;
+.row .open{flex:none;width:24px;text-align:center;color:var(--muted);font-size:15px;
   border-radius:3px;transition:color var(--sp) var(--ease)}
 .row .open:hover{color:var(--accent)}
 .stack{flex:1 1 auto;min-width:0;height:100%;display:flex;flex-direction:column;
@@ -346,7 +346,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
     <div class="rows" id="plist"></div>
     <div class="hintline">
       <span><kbd>&#8593;&#8595;</kbd> move</span><span><kbd>&#8629;</kbd> insert</span>
-      <span><kbd>&#8594;</kbd> read</span><span><kbd>&#9734;</kbd> favourite</span>
+      <span><kbd>&#9636;</kbd> or <kbd>&#8594;</kbd> read</span><span><kbd>&#9734;</kbd> favourite</span>
       <span><kbd>esc</kbd> close</span>
     </div>
   </div>
@@ -938,7 +938,7 @@ function render(){
     '<div class="row' + (i === sel ? ' sel' : '') + (it.dim ? ' dim' : '') + '" data-i="' + i + '">' +
     (starred ? '<span class="star' + (favs.has(it.path) ? ' on' : '') + '" data-fav="' +
        esc(it.path) + '" title="favourite">' + (favs.has(it.path) ? '★' : '☆') + '</span>' : '') +
-    (starred ? '<span class="open" data-open="' + i + '" title="Read this skill">&#9744;</span>' : '') +
+    (starred ? '<span class="open" data-open="' + i + '" title="Read this skill">&#9636;</span>' : '') +
     '<span class="kind">' + it.kind + '</span><span class="t">' + esc(it.t) + '</span>' +
     '<span class="s">' + esc(it.s || '') + '</span></div>').join('')
     : '<div class="empty">' +

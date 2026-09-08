@@ -124,6 +124,18 @@ const WORKING = [
  * never be talked into reading an arbitrary file — it is an allowlist, not a
  * sanitiser, which is the only version of this that stays safe. */
 const readable = new Set()
+let skillCache = { at: 0, data: null }
+/* readSkills() is what fills `readable`, so /skill used to 404 for everything
+ * until something had listed skills in THIS process. A host restart (a deploy,
+ * a crash, launchd) therefore broke every "read this skill" click on an
+ * already-open page. The index is built on demand now, and cached, so no
+ * endpoint depends on another having run first. */
+async function skillIndex() {
+  if (Date.now() - skillCache.at < 30_000 && skillCache.data) return skillCache.data
+  const data = await readSkills()
+  skillCache = { at: Date.now(), data }
+  return data
+}
 const lastTail = new Map()
 /* Attaching or resizing a pane makes tmux REFLOW its contents, which changes
  * the captured text without a single byte of new output. The tail-diff can't
@@ -423,7 +435,7 @@ async function route(req, res) {
 
   if (p === '/health')   return json(res, { ok: true, tmux: TMUX, pid: process.pid })
   if (p === '/sessions') return json(res, await sessionsCached())
-  if (p === '/skills')   return json(res, await readSkills())
+  if (p === '/skills')   return json(res, await skillIndex())
   if (p === '/projects') return json(res, await readProjects())
 
   if (MUTATIONS.has(p)) sessionCache = { at: 0, data: null }
@@ -461,6 +473,7 @@ async function route(req, res) {
   }
   if (p === '/skill') {
     const f = url.searchParams.get('path') || ''
+    await skillIndex()                            // make sure the allowlist exists
     if (!readable.has(f)) {                       // not in the index → not readable
       res.writeHead(404, {'content-type':'application/json'})
       return res.end(JSON.stringify({ error: 'unknown_skill' }))
