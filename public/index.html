@@ -476,10 +476,30 @@ function connect(id){
     setConn(true, m ? (m.cmd === 'claude' ? 'claude' : 'shell') : 'connected')
     sendResize(); term.focus() }
   sock.onmessage = e => { if (ws===sock) term.write(e.data) }
-  sock.onclose = () => { if (ws!==sock) return; setConn(false,'reconnecting'); scheduleRetry() }
+  sock.onclose = async (ev) => {
+    if (ws !== sock) return
+    /* A dead session must not be retried. Reconnecting is for a dropped
+       connection; if the server says the session is GONE, retrying just
+       reprints the error every few seconds forever. */
+    if (ev.code === 4404){
+      ws = null; wantId = null; retry = 0
+      setConn(false, 'session ended')
+      activity.delete(id)
+      await refresh()
+      const next = sessions.find(s2 => s2.id !== id)
+      if (next) switchTo(next.id)
+      else { term.reset(); firstRun(); setConn(false, 'no session') }
+      return
+    }
+    setConn(false, 'reconnecting'); scheduleRetry()
+  }
   sock.onerror = () => { if (ws===sock) setConn(false,'reconnecting') }
 }
-function scheduleRetry(){ retryTimer = setTimeout(() => connect(wantId), Math.min(500*2**retry++, 8000)) }
+function scheduleRetry(){
+  // Give up eventually rather than sit in a silent retry loop forever.
+  if (retry > 12){ setConn(false, 'disconnected — reload to retry'); return }
+  retryTimer = setTimeout(() => connect(wantId), Math.min(500 * 2 ** retry++, 8000))
+}
 function setConn(on,label){ $('dot').className = 'dot'+(on?' on':''); $('conn').textContent = label }
 function sendResize(){
   fit.fit()

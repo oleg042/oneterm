@@ -568,7 +568,10 @@ wss.on('connection', async (ws, req) => {
   const name = PREFIX + id
   const sessions = await listSessions()
   if (!sessions.some(s => s.id === id)) {
-    ws.send(`\r\n\x1b[31m[session ${id} is gone]\x1b[0m\r\n`); ws.close(); return
+    // 4404 = this session does not exist. A plain close is indistinguishable
+    // from a dropped connection, so the client retried a dead session forever.
+    ws.send(`\r\n\x1b[31m[session ${id} is gone]\x1b[0m\r\n`)
+    ws.close(4404, 'session_gone'); return
   }
 
   // NEVER attach with -d. It force-detaches every other client, so two open
