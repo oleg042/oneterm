@@ -215,7 +215,10 @@ body.rail-dragging .sess{user-select:none}
 .stack{flex:1 1 auto;min-width:0;height:100%;display:flex;flex-direction:column;
   background:var(--paper);overflow:hidden}
 main{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
-#term{position:absolute;inset:0;padding:16px 8px 8px 20px}
+/* Inset, NOT padded. FitAddon sizes from this element's own box and has no
+   idea about padding we add, so padding made it propose more columns than fit
+   and the right of every line was clipped. */
+#term{position:absolute;top:16px;right:8px;bottom:8px;left:20px;padding:0}
 /* xterm renders a default (white) scrollbar down the right edge. With
    scrollback:0 it scrolls nothing — tmux owns history and handles the wheel —
    so it was a bright line against a dark terminal for no purpose. */

@@ -57,7 +57,24 @@ if [ -z "${NEW_PID:-}" ]; then
   exit 1
 fi
 
+# A route can be dead while the host is perfectly healthy — /skills spent
+# several commits returning {"error":"skillIndex is not defined"} because an
+# edit deleted the function, and nothing here noticed. Smoke the endpoints.
+FAILED=""
+for ep in health sessions skills projects; do
+  BODY=$(curl -sf --max-time 5 "http://127.0.0.1:$PORT/$ep" 2>/dev/null)
+  case "$BODY" in
+    ''|*'"error"'*) FAILED="$FAILED /$ep" ;;
+  esac
+done
+if [ -n "$FAILED" ]; then
+  echo "✗ host is up but these routes are broken:$FAILED"
+  echo "  check ~/Library/Logs/oneterm/host.log for [route error]"
+  exit 1
+fi
+
 echo "✓ host up as pid $NEW_PID"
+echo "✓ routes healthy: /health /sessions /skills /projects"
 echo "✓ sessions: $SESSIONS_BEFORE before, $SESSIONS_AFTER after (tmux kept them)"
 echo
 echo "The browser reconnects on its own. Reload the tab only if you changed index.html."

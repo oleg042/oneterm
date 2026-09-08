@@ -316,6 +316,20 @@ async function findUnder(root, filename, depth) {
   } catch { return [] }
 }
 
+/* Paths /skill is willing to read: an allowlist built from the index, so it can
+ * never be talked into reading a file that is not a known skill. */
+const readable = new Set()
+let skillCache = { at: 0, data: null }
+/* Built ON DEMAND and cached. It used to be filled as a side effect of the
+ * /skills route, so a fresh host process refused every read until something
+ * happened to list skills first. */
+async function skillIndex() {
+  if (Date.now() - skillCache.at < 30_000 && skillCache.data) return skillCache.data
+  const data = await readSkills()
+  skillCache = { at: Date.now(), data }
+  return data
+}
+
 async function findMd(root) {
   try {
     const { stdout } = await execFileP('find', ['-L', root, '-name', '*.md', '-maxdepth', '6'],
