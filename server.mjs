@@ -167,8 +167,22 @@ const WORKING = [
  * returns to zero would pin a session busy for life, which is exactly the trap
  * the MCP-banner note above already records. If the [state] log ever shows a
  * session going work 0->1 via this pattern and never back, that is the tell. */
+const LIVE_LINES = 20
+/* A spinner that has no elapsed timer YET — "✳ Ideating…" — which none of the
+ * patterns above can see, because they all require a "(" on the line. Single
+ * word before the ellipsis on purpose: it separates the spinner slot from a
+ * transcript sentence that happens to end in one. */
+const WORKING_LIVE = [
+  /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*$/m,
+]
 const BACKGROUND = [
-  /·\s*[1-9]\d*\s+shells?\b/,
+  /* Prose-proof: the status-line segment is followed by another middot or the
+   * end of the line, whereas the TRANSCRIPT writes "· 1 shell still running",
+   * which this refuses. That is what lets the window be WIDE — and it has to
+   * be, because Claude Code draws the expanded agent panel BELOW the status
+   * line, so at 3 lines the status line fell outside the window entirely and
+   * a session with two running background shells read as idle. */
+  /·\s*[1-9]\d*\s+shells?\s*(?=·|$)/m,
 ]
 /* A run is detected by sampling an ANIMATING pane, so a single miss is a
  * blink, not an ending. Keep "working" latched for a few seconds after the last
@@ -211,7 +225,8 @@ function logState(s, tail) {
   const why = s.working
     ? (s.cmd === 'claude'
         ? String(WORKING.find(re => re.test(tail))
-                 ?? BACKGROUND.find(re => re.test(liveTail(tail, 3))) ?? 'latched')
+                 ?? WORKING_LIVE.find(re => re.test(liveTail(tail, LIVE_LINES)))
+                 ?? BACKGROUND.find(re => re.test(liveTail(tail, LIVE_LINES))) ?? 'latched')
         : 'tail-diff')
     : s.waiting
     ? String(WAITING.find(re => re.test(liveTail(tail))) ?? '?')
@@ -247,10 +262,9 @@ async function annotateWaiting(list) {
          * "working"; only the foreground one may override a live prompt, so a
          * permission prompt with a background shell behind it still reads as
          * "needs you" rather than being hidden by the busy state. */
-        fgHit = WORKING.some(re => re.test(tail))
-        // last 3 lines ONLY — see the BACKGROUND note; transcript prose says
-        // "· 1 shell still running" and that sentence never scrolls away
-        const bgHit = BACKGROUND.some(re => re.test(liveTail(tail, 3)))
+        const live = liveTail(tail, LIVE_LINES)
+        fgHit = WORKING.some(re => re.test(tail)) || WORKING_LIVE.some(re => re.test(live))
+        const bgHit = BACKGROUND.some(re => re.test(live))
         if (fgHit || bgHit) workingUntil.set(s.name, Date.now() + s.latchMs)
       } else {
         /* Shells print no run marker, so fall back to "the pane changed since
