@@ -131,13 +131,44 @@ const WORKING = [
   /still (thinking|working)/i,
   /* The elapsed timer is multi-unit once a run passes a minute — "(3m 9s ·" —
    * so a \(\d+s pattern stops matching exactly when a run is long enough to
-   * care about. */
-  /\((?:\d+[hms]\s*)+[·)]/,
+   * care about.
+   *
+   * The leading … is load-bearing, and was added after the [state] log caught
+   * this pattern reporting work on a session sitting at an EMPTY PROMPT with no
+   * spinner. Bare "(<time>" matches two things that are not a running turn:
+   * VISIBLE TRANSCRIPT of finished steps — an agent that ended "· 2m 0s" — and
+   * the persistent "/goal active (41m)" badge, which is drawn for the whole
+   * life of a goal. The first flapped work 1->0->1 as those lines scrolled,
+   * one false "done" chime per flap; the second pinned a session busy for 41
+   * minutes. Only the live spinner writes "word… (elapsed", so require the
+   * ellipsis and both stop matching. */
+  /…\s*\((?:\d+[hms]\s*)+[·)]/,
   /* The spinner GLYPH animates through a set we cannot enumerate reliably, so
    * match the SHAPE instead: a mark, a word ending in an ellipsis, then the
    * timer's opening paren. Enumerating glyphs made detection blink at
    * animation speed, and every blink read as "the run finished". */
   /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*\(/m,
+]
+/* Every marker above describes the FOREGROUND turn, which is why a session
+ * reading "idle" could still have real work in flight: Claude Code's main loop
+ * finishes, sits at an empty prompt, and a backgrounded shell keeps running.
+ * The status line is the only place that says so.
+ *
+ * Matched with the middot separator and a NON-ZERO count, and only against the
+ * last 3 lines — Claude Code always draws the input box and status line at the
+ * bottom, so nothing else can be there. That last part is load-bearing: the
+ * TRANSCRIPT says things like "Baked for 3m 12s · done 11:03 PM · 1 shell still
+ * running", which matches the same pattern and never scrolls away. Anchored to
+ * the status line it clears itself the moment the segment stops being drawn.
+ *
+ * The sibling "← N agents" counter is deliberately NOT here. I could not prove
+ * it drops when an agent finishes — three minutes of sampling a live session
+ * showed "1 shell · ← 7 agents" completely static — and a counter that never
+ * returns to zero would pin a session busy for life, which is exactly the trap
+ * the MCP-banner note above already records. If the [state] log ever shows a
+ * session going work 0->1 via this pattern and never back, that is the tell. */
+const BACKGROUND = [
+  /·\s*[1-9]\d*\s+shells?\b/,
 ]
 /* A run is detected by sampling an ANIMATING pane, so a single miss is a
  * blink, not an ending. Keep "working" latched for a few seconds after the last
@@ -178,7 +209,10 @@ function logState(s, tail) {
   if (!p) return                                   // first sight is not a flip
   if (p.working === s.working && p.waiting === s.waiting) return
   const why = s.working
-    ? (s.cmd === 'claude' ? String(WORKING.find(re => re.test(tail)) ?? 'latched') : 'tail-diff')
+    ? (s.cmd === 'claude'
+        ? String(WORKING.find(re => re.test(tail))
+                 ?? BACKGROUND.find(re => re.test(liveTail(tail, 3))) ?? 'latched')
+        : 'tail-diff')
     : s.waiting
     ? String(WAITING.find(re => re.test(liveTail(tail))) ?? '?')
     : 'no marker'
@@ -206,8 +240,18 @@ async function annotateWaiting(list) {
       /* The client subtracts this from a run's measured span, so a latch can be
          generous without turning a 0.2s command into a latch-long "run". */
       s.latchMs = s.cmd === 'claude' ? LATCH_CLAUDE : LATCH_SHELL
+      let fgHit = false
       if (s.cmd === 'claude') {
-        if (WORKING.some(re => re.test(tail))) workingUntil.set(s.name, Date.now() + s.latchMs)
+        /* FOREGROUND = a turn is running. BACKGROUND = the main loop is idle at
+         * an empty prompt but a backgrounded shell is still going. Both are
+         * "working"; only the foreground one may override a live prompt, so a
+         * permission prompt with a background shell behind it still reads as
+         * "needs you" rather than being hidden by the busy state. */
+        fgHit = WORKING.some(re => re.test(tail))
+        // last 3 lines ONLY — see the BACKGROUND note; transcript prose says
+        // "· 1 shell still running" and that sentence never scrolls away
+        const bgHit = BACKGROUND.some(re => re.test(liveTail(tail, 3)))
+        if (fgHit || bgHit) workingUntil.set(s.name, Date.now() + s.latchMs)
       } else {
         /* Shells print no run marker, so fall back to "the pane changed since
          * last poll". tmux's #{session_activity} was tried first and rejected:
@@ -220,7 +264,9 @@ async function annotateWaiting(list) {
       }
       // one latch, both paths — the shell branch used to have none
       s.working = Date.now() < (workingUntil.get(s.name) ?? 0)
-      if (s.working) s.waiting = false      // actively printing is never "needs you"
+      // Actively PRINTING is never "needs you". Background work is, though —
+      // a prompt can be waiting on you while a shell runs behind it.
+      if (fgHit || (s.working && s.cmd !== 'claude')) s.waiting = false
       logState(s, tail)
     } catch { s.waiting = false; s.working = false }
   }))

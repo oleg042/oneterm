@@ -62,7 +62,13 @@ fi
 # edit deleted the function, and nothing here noticed. Smoke the endpoints.
 FAILED=""
 for ep in health sessions skills projects; do
-  BODY=$(curl -sf --max-time 5 "http://127.0.0.1:$PORT/$ep" 2>/dev/null)
+  # 30s, not 5. This runs the instant the host is back, when /skills has to
+  # BUILD its index (find -L across every skill dir) before it can answer.
+  # Measured cold at 5.22s against 157 skills — just over the old 5s limit, so
+  # the smoke test failed a perfectly healthy route, intermittently, forever.
+  # A guard that cries wolf gets ignored, which defeats the point of having it.
+  # A genuinely broken route still fails fast: it returns {"error":...}.
+  BODY=$(curl -sf --max-time 30 "http://127.0.0.1:$PORT/$ep" 2>/dev/null)
   case "$BODY" in
     ''|*'"error"'*) FAILED="$FAILED /$ep" ;;
   esac
