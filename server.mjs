@@ -91,7 +91,12 @@ async function listSessions() {
  * blocked agent and an idle shell look identical, which defeats the point of
  * running four at once. */
 const WAITING = [
-  /Do you want (to|me)/i,
+  /* /Do you want (to|me)/ was here and had to go: it is PROSE, not a prompt.
+   * Claude Code ends turns with "do you want me to build it?" constantly, and
+   * that sentence merely SITTING on screen pinned the session to "needs you"
+   * and rang the bell. Everything left is STRUCTURAL — a shape only a live
+   * prompt draws. The real permission prompt still matches, via its numbered
+   * selector below. */
   /Enter to confirm/i,
   /\(y\/n\)/i,
   /Press Enter to/i,
@@ -110,6 +115,12 @@ async function paneTail(name) {
    * finished turn kept a session pinned to "working". */
   const out = await tmux(['capture-pane', '-p', '-t', name])
   return out.replace(/\s+$/, '').slice(-2000)
+}
+/* A live prompt sits at the BOTTOM of the pane, so that is the only place worth
+ * looking for one. Searching all 2000 characters meant a question asked and
+ * answered ten screens ago still counted as a prompt awaiting an answer. */
+function liveTail(tail, lines = 25) {
+  return tail.split('\n').slice(-lines).join('\n')
 }
 /* Claude Code redraws its input box and status line constantly — a ticking
  * context %, a blinking cursor — so "the pane changed since last poll" is true
@@ -133,7 +144,15 @@ const WORKING = [
  * positive match: the state stops flickering, the rail dot stops stuttering,
  * and — the point — the transition to "not working" happens exactly once, when
  * the agent has really stopped. */
-const WORK_LATCH_MS = 5000
+/* Latches, per session KIND — they were not equal before and that asymmetry
+ * was half the false chimes.
+ *   claude: watches for positive run markers, and those genuinely vanish for a
+ *           while when a turn hands off to sub-agents. At 5s that read as an
+ *           ending and chimed mid-run, repeatedly, on a run that never stopped.
+ *   shell:  had NO latch at all — one poll where the pane happened to be
+ *           byte-identical dropped it straight to "not working". */
+const LATCH_CLAUDE = 12000
+const LATCH_SHELL  = 6000
 const workingUntil = new Map()
 const lastTail = new Map()
 /* Attaching or resizing a pane makes tmux REFLOW its contents, which changes
@@ -144,6 +163,29 @@ const settleUntil = new Map()
 function settle(name, ms = 1800) {
   settleUntil.set(name, Date.now() + ms)
   lastTail.delete(name)          // next capture becomes the new baseline
+  workingUntil.delete(name)      // and drop a latch a reflow would have set
+}
+
+/* There were NO logs, so a false chime could only be argued about, never
+ * diagnosed. The sound fires client-side off these two booleans, so record
+ * every flip together with the evidence that caused it: which pattern matched,
+ * and what the bottom of the pane actually said. Transitions only — logging
+ * every poll would bury the one line that matters. */
+const prevState = new Map()
+function logState(s, tail) {
+  const p = prevState.get(s.name)
+  prevState.set(s.name, { working: s.working, waiting: s.waiting })
+  if (!p) return                                   // first sight is not a flip
+  if (p.working === s.working && p.waiting === s.waiting) return
+  const why = s.working
+    ? (s.cmd === 'claude' ? String(WORKING.find(re => re.test(tail)) ?? 'latched') : 'tail-diff')
+    : s.waiting
+    ? String(WAITING.find(re => re.test(liveTail(tail))) ?? '?')
+    : 'no marker'
+  console.log(`[state] ${s.name} ${s.cmd}`
+    + ` work ${p.working ? 1 : 0}->${s.working ? 1 : 0}`
+    + ` wait ${p.waiting ? 1 : 0}->${s.waiting ? 1 : 0}`
+    + ` via ${why} | ${JSON.stringify(liveTail(tail, 3).slice(-180))}`)
 }
 let sessionCache = { at: 0, data: null }
 async function sessionsCached() {
@@ -159,11 +201,13 @@ async function annotateWaiting(list) {
   await Promise.all(list.map(async (s) => {
     try {
       const tail = await paneTail(s.name)
-      s.waiting = WAITING.some(re => re.test(tail))
+      s.waiting = WAITING.some(re => re.test(liveTail(tail)))
       const settling = Date.now() < (settleUntil.get(s.name) ?? 0)
+      /* The client subtracts this from a run's measured span, so a latch can be
+         generous without turning a 0.2s command into a latch-long "run". */
+      s.latchMs = s.cmd === 'claude' ? LATCH_CLAUDE : LATCH_SHELL
       if (s.cmd === 'claude') {
-        if (WORKING.some(re => re.test(tail))) workingUntil.set(s.name, Date.now() + WORK_LATCH_MS)
-        s.working = Date.now() < (workingUntil.get(s.name) ?? 0)
+        if (WORKING.some(re => re.test(tail))) workingUntil.set(s.name, Date.now() + s.latchMs)
       } else {
         /* Shells print no run marker, so fall back to "the pane changed since
          * last poll". tmux's #{session_activity} was tried first and rejected:
@@ -171,9 +215,13 @@ async function annotateWaiting(list) {
          * read as idle. Comparing the tail works either way. */
         const prev = lastTail.get(s.name)
         lastTail.set(s.name, tail)
-        s.working = !settling && prev !== undefined && prev !== tail
+        if (!settling && prev !== undefined && prev !== tail)
+          workingUntil.set(s.name, Date.now() + s.latchMs)
       }
+      // one latch, both paths — the shell branch used to have none
+      s.working = Date.now() < (workingUntil.get(s.name) ?? 0)
       if (s.working) s.waiting = false      // actively printing is never "needs you"
+      logState(s, tail)
     } catch { s.waiting = false; s.working = false }
   }))
   // These are keyed by session name and would otherwise grow forever in a
@@ -182,6 +230,7 @@ async function annotateWaiting(list) {
   for (const k of lastTail.keys())     if (!live.has(k)) lastTail.delete(k)
   for (const k of settleUntil.keys())  if (!live.has(k)) settleUntil.delete(k)
   for (const k of workingUntil.keys()) if (!live.has(k)) workingUntil.delete(k)
+  for (const k of prevState.keys())    if (!live.has(k)) prevState.delete(k)
   return list
 }
 
@@ -433,7 +482,7 @@ const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i
 const ALLOWED_ORIGINS = new Set([
   `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`,
 ])
-const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop'])
+const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop', '/clientlog'])
 
 function guard(req, res) {
   if (!LOCAL_HOST.test(req.headers.host || '')) {
@@ -470,6 +519,17 @@ async function route(req, res) {
    * dropped file's real path — by design — so the bytes come to us, we write
    * them somewhere stable, and the client types THAT path into the session.
    * Same end result: you drop a screenshot, the agent gets a path it can read. */
+  /* The chime decision is made in the browser; the state flip that caused it is
+   * made here. Posting the decision back puts both in ONE log on ONE clock, so
+   * a stray sound can be read off rather than reasoned about. */
+  if (p === '/clientlog') {
+    const chunks = []; let n = 0
+    for await (const c of req) { n += c.length; if (n > 4096) break; chunks.push(c) }
+    const body = Buffer.concat(chunks).toString('utf8').slice(0, 600).replace(/\s+/g, ' ')
+    console.log(`[chime] ${body}`)
+    return json(res, { ok: true })
+  }
+
   if (p === '/drop') {
     const raw  = (url.searchParams.get('name') || 'file').split(/[\\/]/).pop()
     const safe = (raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'file').slice(0, 120)

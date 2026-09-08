@@ -662,6 +662,17 @@ function claimChime(key, windowMs = 4000){
   } catch { return true }
 }
 
+/* Every chime decision goes to the host, so the sound and the server-side state
+   flip that caused it land in one log, on one clock. Logged even when the
+   cross-tab lock suppresses the sound — "why did it NOT chime" is a question
+   worth answering too. */
+function note(kind, s, extra){
+  try {
+    fetch('/clientlog', { method:'POST', body: JSON.stringify(
+      { kind, label: s.label, cmd: s.cmd, working: s.working, waiting: s.waiting, ...extra }) })
+  } catch {}
+}
+
 function tone(steps, gain = 0.06){
   if (!soundOn) return
   unlockAudio()
@@ -785,13 +796,19 @@ async function refresh(){
        the time it reports not-working the run has genuinely ended. One
        confirming poll on top of that is enough; two only delayed the chime. */
     if (a.wasWorking && !s.working && !s.waiting && a.quiet >= 1){
-      const ranFor = now - (a.workStart ?? now)
+      /* The server holds "working" latched for latchMs past the last sign of
+         life, so the raw span includes that dead tail. Subtract it, or a 0.2s
+         shell command reads as a latchMs-long run and earns a chime — which is
+         what made the latch unsafe to lengthen before. */
+      const ranFor = now - (a.workStart ?? now) - (s.latchMs ?? 0)
       if (ranFor >= MIN_RUN){
         a.doneUnseen = true
         if (!a.notified && now - (a.lastChime ?? 0) > COOLDOWN){
           a.notified = true; a.lastChime = now
           notifyDone(s.id)
-          if (claimChime('done:' + s.id)) soundDone()
+          const claimed = claimChime('done:' + s.id)
+          if (claimed) soundDone()
+          note('done', s, { ranFor, quiet: a.quiet, latchMs: s.latchMs, claimed })
         }
       }
       a.wasWorking = false      // the run is over; do not re-evaluate it
@@ -800,7 +817,9 @@ async function refresh(){
     a.waitStreak = s.waiting ? (a.waitStreak ?? 0) + 1 : 0
     if (a.waitStreak === HOLD && now - (a.lastChime ?? 0) > COOLDOWN){
       a.lastChime = now
-      if (claimChime('wait:' + s.id)) soundNeeds()
+      const claimed = claimChime('wait:' + s.id)
+      if (claimed) soundNeeds()
+      note('wait', s, { streak: a.waitStreak, claimed })
       if (window.Notification?.permission === 'granted')
         new Notification('oneterm', { body: s.label + ' needs you', tag: s.id + '-wait' })
     }
