@@ -1,0 +1,54 @@
+{
+  "_README": [
+    "Ground truth for each captured pane, decided by READING the fixture, not by",
+    "running a regex over it — an expectation derived from the same pattern it",
+    "checks proves only that the pattern equals itself.",
+    "",
+    "Every entry names the line that decides it, so a future reader can re-judge",
+    "the call without re-deriving it. Panes were captured from live sessions with",
+    "scratchpad/collect.py; the RECONSTRUCTED one is built from an operator",
+    "screenshot of a layout the collector never happened to catch."
+  ],
+
+  "status1_spin0_shells0_prompt0_dd464c.pane": {
+    "working": false, "fg": false, "bg": false, "waiting": false,
+    "why": "empty prompt, no spinner, status line has no shells segment: genuinely idle",
+    "decidedBy": "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+  },
+
+  "status1_spin0_shells1_prompt0_07a666.pane": {
+    "working": true, "fg": false, "bg": true, "waiting": false,
+    "why": "THE REPORTED BUG. Main loop idle at an empty prompt, but a background shell is running. Must read as working, and as BACKGROUND not foreground.",
+    "decidedBy": "  ⏵⏵ auto mode on · 1 shell · ← 7 agents · 1 feedback draft"
+  },
+
+  "status1_spin8_shells0_prompt0_8eb0b1.pane": {
+    "working": true, "fg": true, "bg": false, "waiting": false,
+    "why": "live spinner with an elapsed timer, 8 lines up: a turn is running",
+    "decidedBy": "✽ Leavening… (16m 50s · ↓ 60.3k tokens · almost done thinking with max effort)"
+  },
+
+  "status1_spin8_shells1_prompt0_6cca82.pane": {
+    "working": true, "fg": true, "bg": true, "waiting": false,
+    "why": "both at once: a turn is running AND a background shell is alive",
+    "decidedBy": "✽ Ideating… (5m 42s · ↓ 20.1k tokens)  +  · 1 shell ·"
+  },
+
+  "status4_spin0_shells0_prompt0_e4c334.pane": {
+    "working": false, "fg": false, "bg": false, "waiting": false,
+    "why": "THE KNOWN GAP, recorded honestly rather than hidden. The agent panel below the status line lists a live-looking row — '◯ general-purpose  Reading OagResearchArgs.tsx round-2 anchors' — while the main loop sits at an empty prompt with no spinner and no shells. Today that is false, matching the deliberate decision not to trust anything agent-related until it is shown to clear. If a future capture proves that row disappears when the agent finishes, this expectation flips to true and the pattern goes in. Until then this fixture pins the CURRENT behaviour so the gap cannot be forgotten.",
+    "decidedBy": "  ◯ general-purpose  Reading OagResearchArgs.tsx round-2 anchors"
+  },
+
+  "status4_spin11_shells0_prompt0_38c24e.pane": {
+    "working": true, "fg": true, "bg": false, "waiting": false,
+    "why": "LIVE CAPTURE of the panel-expanded layout — the status line really does sit 4 lines from the bottom with '⏺ main' and '◯ general-purpose …' drawn below it. This is the independent confirmation that the RECONSTRUCTED fixture was not wishful; the collector found it on its own. Working here is FOREGROUND: a spinner with a timer, 11 lines up, matched against the whole tail so its distance does not matter.",
+    "decidedBy": "✶ Skedaddling… (3m 41s · ↓ 5.2k tokens)"
+  },
+
+  "status4_spin0_shells1_prompt0_RECONSTRUCTED.pane": {
+    "working": true, "fg": false, "bg": true, "waiting": false,
+    "why": "THE REGRESSION. Agent panel is expanded, so Claude Code draws it BELOW the status line and the shells segment sits 4 lines from the bottom. A 3-line window missed it and the session read as idle. This is the fixture that fails if LIVE_LINES is ever narrowed again.",
+    "decidedBy": "  ⏵⏵ auto mode on · 2 shells · 1 feedback draft   (4 lines from bottom)"
+  }
+}

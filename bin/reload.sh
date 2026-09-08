@@ -36,6 +36,18 @@ if ! node -e '
 fi
 echo "  both files parse"
 
+# Detection is the part that has broken most often, always the same way: an
+# assumption about where Claude Code draws something, never checked. The tests
+# run the shipping patterns against panes captured from live sessions, so a bad
+# assumption fails here instead of showing up as a wrong dot or a stray chime.
+if ! node "$DIR/test/detect.test.mjs" >/tmp/oneterm-detect.log 2>&1; then
+  echo
+  echo "✗ detection tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-detect.log | tail -25
+  exit 1
+fi
+echo "  detection tests pass ($(grep -c '✓' /tmp/oneterm-detect.log) checks)"
+
 OLD_PID=$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/health" 2>/dev/null \
           | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
 SESSIONS_BEFORE=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^oneterm_' || echo 0)

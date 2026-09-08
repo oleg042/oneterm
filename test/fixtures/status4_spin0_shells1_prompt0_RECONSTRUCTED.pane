@@ -1,0 +1,19 @@
+⏺ Strip fix is staged locally. The crash-fix deploy and the designer's verdict are the two pending inputs; the
+  inline-lane capture follows the first, the closing push with the strip separator and the STATE row follow the second.
+
+✻ Waiting for 1 background agent to finish
+
+  ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ✳ Bug report drafted: Edit with an over-wide old_string deleted 234 lines of CSS; committed without reading    │
+  │ 1 to review · 2 to send · 0 to dismiss                                                                        │
+  ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+                                                                          ✔ Update installed · Restart to update
+──────────────────────────────────────────────────────────────────────────────────────────────── oneawaybuild ─
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  /Users/olegdeduchenko/Projects/oneawaybuild | Fable 5.1 | ███████░░░ 73%                                  /rc
+  ⏵⏵ auto mode on · 2 shells · 1 feedback draft
+
+  ● main
+⟩ ○ general-purpose  Checking agent_spec knobs in oag.ts                              4m 5s · ↓ 228.1k tokens

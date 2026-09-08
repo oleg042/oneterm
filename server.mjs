@@ -23,6 +23,9 @@ import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
 import pty from 'node-pty'
+// Detection lives in its own module so test/detect.test.mjs runs the patterns
+// that actually ship, against panes captured from live sessions.
+import { classify, liveTail, LIVE_LINES } from './detect.mjs'
 
 const execFileP = promisify(execFile)
 const ROOT = dirname(fileURLToPath(import.meta.url))
@@ -90,24 +93,6 @@ async function listSessions() {
  * Code actually uses when it is waiting on a human decision. Without this a
  * blocked agent and an idle shell look identical, which defeats the point of
  * running four at once. */
-const WAITING = [
-  /* /Do you want (to|me)/ was here and had to go: it is PROSE, not a prompt.
-   * Claude Code ends turns with "do you want me to build it?" constantly, and
-   * that sentence merely SITTING on screen pinned the session to "needs you"
-   * and rang the bell. Everything left is STRUCTURAL — a shape only a live
-   * prompt draws. The real permission prompt still matches, via its numbered
-   * selector below. */
-  /Enter to confirm/i,
-  /\(y\/n\)/i,
-  /Press Enter to/i,
-  /❯\s*\d+\.\s/,          // Claude Code's numbered choice list
-  /New MCP server found/i,
-  /\bProceed\?/i,
-]
-/* Deliberately NOT matched: "N MCP servers need authentication". That is a
- * BANNER printed once at startup and it lives in the scrollback forever, so
- * matching it pinned a session to "needs you" for its whole life — including
- * while it was visibly working. Only the LAST few lines are a live prompt. */
 async function paneTail(name) {
   /* The VISIBLE pane only — no -S, so no scrollback. Both signals we look for
    * describe the current frame: a run marker that is on screen now, or a prompt
@@ -116,74 +101,6 @@ async function paneTail(name) {
   const out = await tmux(['capture-pane', '-p', '-t', name])
   return out.replace(/\s+$/, '').slice(-2000)
 }
-/* A live prompt sits at the BOTTOM of the pane, so that is the only place worth
- * looking for one. Searching all 2000 characters meant a question asked and
- * answered ten screens ago still counted as a prompt awaiting an answer. */
-function liveTail(tail, lines = 25) {
-  return tail.split('\n').slice(-lines).join('\n')
-}
-/* Claude Code redraws its input box and status line constantly — a ticking
- * context %, a blinking cursor — so "the pane changed since last poll" is true
- * forever and a session stuck on "working". Detect the POSITIVE markers it
- * prints only while a turn is running instead. */
-const WORKING = [
-  /esc to interrupt/i,
-  /still (thinking|working)/i,
-  /* The elapsed timer is multi-unit once a run passes a minute — "(3m 9s ·" —
-   * so a \(\d+s pattern stops matching exactly when a run is long enough to
-   * care about.
-   *
-   * The leading … is load-bearing, and was added after the [state] log caught
-   * this pattern reporting work on a session sitting at an EMPTY PROMPT with no
-   * spinner. Bare "(<time>" matches two things that are not a running turn:
-   * VISIBLE TRANSCRIPT of finished steps — an agent that ended "· 2m 0s" — and
-   * the persistent "/goal active (41m)" badge, which is drawn for the whole
-   * life of a goal. The first flapped work 1->0->1 as those lines scrolled,
-   * one false "done" chime per flap; the second pinned a session busy for 41
-   * minutes. Only the live spinner writes "word… (elapsed", so require the
-   * ellipsis and both stop matching. */
-  /…\s*\((?:\d+[hms]\s*)+[·)]/,
-  /* The spinner GLYPH animates through a set we cannot enumerate reliably, so
-   * match the SHAPE instead: a mark, a word ending in an ellipsis, then the
-   * timer's opening paren. Enumerating glyphs made detection blink at
-   * animation speed, and every blink read as "the run finished". */
-  /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*\(/m,
-]
-/* Every marker above describes the FOREGROUND turn, which is why a session
- * reading "idle" could still have real work in flight: Claude Code's main loop
- * finishes, sits at an empty prompt, and a backgrounded shell keeps running.
- * The status line is the only place that says so.
- *
- * Matched with the middot separator and a NON-ZERO count, and only against the
- * last 3 lines — Claude Code always draws the input box and status line at the
- * bottom, so nothing else can be there. That last part is load-bearing: the
- * TRANSCRIPT says things like "Baked for 3m 12s · done 11:03 PM · 1 shell still
- * running", which matches the same pattern and never scrolls away. Anchored to
- * the status line it clears itself the moment the segment stops being drawn.
- *
- * The sibling "← N agents" counter is deliberately NOT here. I could not prove
- * it drops when an agent finishes — three minutes of sampling a live session
- * showed "1 shell · ← 7 agents" completely static — and a counter that never
- * returns to zero would pin a session busy for life, which is exactly the trap
- * the MCP-banner note above already records. If the [state] log ever shows a
- * session going work 0->1 via this pattern and never back, that is the tell. */
-const LIVE_LINES = 20
-/* A spinner that has no elapsed timer YET — "✳ Ideating…" — which none of the
- * patterns above can see, because they all require a "(" on the line. Single
- * word before the ellipsis on purpose: it separates the spinner slot from a
- * transcript sentence that happens to end in one. */
-const WORKING_LIVE = [
-  /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*$/m,
-]
-const BACKGROUND = [
-  /* Prose-proof: the status-line segment is followed by another middot or the
-   * end of the line, whereas the TRANSCRIPT writes "· 1 shell still running",
-   * which this refuses. That is what lets the window be WIDE — and it has to
-   * be, because Claude Code draws the expanded agent panel BELOW the status
-   * line, so at 3 lines the status line fell outside the window entirely and
-   * a session with two running background shells read as idle. */
-  /·\s*[1-9]\d*\s+shells?\s*(?=·|$)/m,
-]
 /* A run is detected by sampling an ANIMATING pane, so a single miss is a
  * blink, not an ending. Keep "working" latched for a few seconds after the last
  * positive match: the state stops flickering, the rail dot stops stuttering,
@@ -217,20 +134,11 @@ function settle(name, ms = 1800) {
  * and what the bottom of the pane actually said. Transitions only — logging
  * every poll would bury the one line that matters. */
 const prevState = new Map()
-function logState(s, tail) {
+function logState(s, why, tail) {
   const p = prevState.get(s.name)
   prevState.set(s.name, { working: s.working, waiting: s.waiting })
   if (!p) return                                   // first sight is not a flip
   if (p.working === s.working && p.waiting === s.waiting) return
-  const why = s.working
-    ? (s.cmd === 'claude'
-        ? String(WORKING.find(re => re.test(tail))
-                 ?? WORKING_LIVE.find(re => re.test(liveTail(tail, LIVE_LINES)))
-                 ?? BACKGROUND.find(re => re.test(liveTail(tail, LIVE_LINES))) ?? 'latched')
-        : 'tail-diff')
-    : s.waiting
-    ? String(WAITING.find(re => re.test(liveTail(tail))) ?? '?')
-    : 'no marker'
   console.log(`[state] ${s.name} ${s.cmd}`
     + ` work ${p.working ? 1 : 0}->${s.working ? 1 : 0}`
     + ` wait ${p.waiting ? 1 : 0}->${s.waiting ? 1 : 0}`
@@ -250,22 +158,19 @@ async function annotateWaiting(list) {
   await Promise.all(list.map(async (s) => {
     try {
       const tail = await paneTail(s.name)
-      s.waiting = WAITING.some(re => re.test(liveTail(tail)))
+      /* One pure call, shared with the tests. FOREGROUND = a turn is running.
+       * BACKGROUND = the main loop is idle at an empty prompt but a
+       * backgrounded shell is still going. Both are "working"; only the
+       * foreground one may override a live prompt, so a permission prompt with
+       * a shell running behind it still reads as "needs you". */
+      const c = classify(tail, s.cmd)
+      s.waiting = c.waiting
       const settling = Date.now() < (settleUntil.get(s.name) ?? 0)
       /* The client subtracts this from a run's measured span, so a latch can be
          generous without turning a 0.2s command into a latch-long "run". */
       s.latchMs = s.cmd === 'claude' ? LATCH_CLAUDE : LATCH_SHELL
-      let fgHit = false
       if (s.cmd === 'claude') {
-        /* FOREGROUND = a turn is running. BACKGROUND = the main loop is idle at
-         * an empty prompt but a backgrounded shell is still going. Both are
-         * "working"; only the foreground one may override a live prompt, so a
-         * permission prompt with a background shell behind it still reads as
-         * "needs you" rather than being hidden by the busy state. */
-        const live = liveTail(tail, LIVE_LINES)
-        fgHit = WORKING.some(re => re.test(tail)) || WORKING_LIVE.some(re => re.test(live))
-        const bgHit = BACKGROUND.some(re => re.test(live))
-        if (fgHit || bgHit) workingUntil.set(s.name, Date.now() + s.latchMs)
+        if (c.working) workingUntil.set(s.name, Date.now() + s.latchMs)
       } else {
         /* Shells print no run marker, so fall back to "the pane changed since
          * last poll". tmux's #{session_activity} was tried first and rejected:
@@ -278,10 +183,11 @@ async function annotateWaiting(list) {
       }
       // one latch, both paths — the shell branch used to have none
       s.working = Date.now() < (workingUntil.get(s.name) ?? 0)
-      // Actively PRINTING is never "needs you". Background work is, though —
-      // a prompt can be waiting on you while a shell runs behind it.
-      if (fgHit || (s.working && s.cmd !== 'claude')) s.waiting = false
-      logState(s, tail)
+      // Actively PRINTING is never "needs you" (classify already applied that
+      // for the claude path). Background work is not printing, so it does not
+      // hide a prompt: a shell can run behind a question that is blocked on you.
+      if (s.working && s.cmd !== 'claude') s.waiting = false
+      logState(s, s.cmd === 'claude' ? c.why : 'tail-diff', tail)
     } catch { s.waiting = false; s.working = false }
   }))
   // These are keyed by session name and would otherwise grow forever in a

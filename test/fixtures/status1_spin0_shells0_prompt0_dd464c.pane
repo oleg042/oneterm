@@ -1,0 +1,37 @@
+
+  The rest
+
+  ┌─────┬────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │  #  │                                                          Fix                                                           │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ #2  │ All three new routes now gate on requireAdmin — client portal users can no longer read prospect mobiles and full names │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ #4  │ Wizard counts the 4 steps a lead_data rule actually shows, no more 2→4 jump                                            │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ #5  │ Conditions carry a stable _k, normalised on load, stripped on save — no more lost drafts                               │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ #6  │ Match case ids use the row key, so two new rows can't share id="case-"                                                 │
+  ├─────┼────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+  │ #7  │ Preview capped at 5k newest leads and returns sampled, surfaced in the UI                                              │
+  └─────┴────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  52 tests pass (added one for the sampled flag), tsc clean, dev test artifacts cleaned up, server stopped.
+
+  Where things stand
+
+  15 commits on local dev, still unpushed. Left undone by your scope choice — all trivial whenever you want them: #8 deleting a rule leaves it
+  tagging for ≤30s (one line), #9 a stray eslint-disable for an unconfigured rule, #10 an unused batch export.
+
+  The prod backfills are now unblocked from a code-safety standpoint — the sweep can no longer erase tags or saturate the pool. Say the word and
+  I'll run prod dry-runs first so you see the numbers before anything writes.
+
+✻ Brewed for 13m 21s · done 5:51 PM
+
+※ recap: Goal: auto-tag inbox threads from lead custom variables, across Instantly, EmailBison and LinkedIn. Feature is built, reviewed, and seven
+  review fixes are committed on local dev, unpushed. Next: run prod backfill dry-runs on your go.
+                                                                                                           new task? /clear to save 650.7k tokens
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── auto-tag-inbox-rules ─
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  /Users/olegdeduchenko/Projects/oneaway-app | Opus 5 (1M context) | ██████░░░░ 65%                                                           /rc
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
