@@ -526,17 +526,26 @@ function sendResize(){
    (the rail never settled at its collapsed width, and a forced reflow could
    hang the renderer outright). Coalesce to one call per frame and guard
    re-entry so a resize can never drive another resize. */
-let resizeTimer = 0, resizing = false
+let resizeTimer = 0, resizing = false, lastResizeAt = 0
+/* THROTTLE, not debounce. A pure debounce clears its own timer on every event,
+   so during a continuous window drag it never fires and the terminal only
+   catches up when you let go — leaving a strip of unfilled width trailing the
+   container edge for the whole drag. This fits at most every 60ms WHILE
+   dragging, and once more after it stops to land on the exact final size.
+   Not requestAnimationFrame: rAF is throttled to zero in a background tab, so
+   a resize scheduled there would never run at all. */
+const RESIZE_EVERY = 60
+const runResize = () => {
+  if (resizing) return
+  resizing = true
+  lastResizeAt = Date.now()
+  try { sendResize() } finally { resizing = false }
+}
 const scheduleResize = () => {
-  // NOT requestAnimationFrame: rAF is throttled to zero in a background or
-  // non-foreground tab, so a resize scheduled there never ran and the terminal
-  // silently kept the old column count. A timer fires regardless of visibility.
+  const since = Date.now() - lastResizeAt
+  if (since >= RESIZE_EVERY) runResize()          // keep up during the drag
   clearTimeout(resizeTimer)
-  resizeTimer = setTimeout(() => {
-    if (resizing) return
-    resizing = true
-    try { sendResize() } finally { resizing = false }
-  }, 30)
+  resizeTimer = setTimeout(runResize, RESIZE_EVERY)  // and settle exactly at the end
 }
 new ResizeObserver(scheduleResize).observe($('term'))
 addEventListener('resize', scheduleResize)
