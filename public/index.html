@@ -79,8 +79,10 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
   padding:9px 22px 9px 12px;border-radius:var(--r);text-align:left;overflow:hidden;
   color:var(--muted);transition:background var(--sp) var(--ease),color var(--sp) var(--ease)}
 .sess:hover{background:var(--raise);color:var(--ink)}
-/* active reads as a bookmark stroke, not a filled block */
-.sess.on{color:var(--ink);background:transparent}
+/* Active = bookmark stroke PLUS a branded wash. The stroke alone was too easy
+   to miss at a glance — 2px of colour on a 250px row. The wash is the accent at
+   low alpha, so it reads as "you are here" without becoming a filled block. */
+.sess.on{color:var(--ink);background:var(--accent-soft)}
 .sess.on::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:2px;
   background:var(--accent);border-radius:2px}
 /* idle    — hollow ring: present, doing nothing
@@ -101,7 +103,10 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 @keyframes breathe{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.78)}}
 @keyframes pulseDot{0%,100%{opacity:1}50%{opacity:.6}}
 @keyframes ping{0%{transform:scale(1);opacity:.75}80%,100%{transform:scale(3.2);opacity:0}}
-.sess.s-wait{background:color-mix(in srgb,var(--warn) 9%,transparent)}
+/* :not(.on) so the amber wash never overwrites "you are here" — this rule sits
+   after .sess.on and would otherwise win on equal specificity. An active row
+   that is waiting still says so through its amber bar and pinging dot. */
+.sess.s-wait:not(.on){background:color-mix(in srgb,var(--warn) 9%,transparent)}
 .sess.s-wait::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:2px;
   background:var(--warn);border-radius:2px}
 .sess.s-busy::before{content:'';position:absolute;left:0;top:9px;bottom:9px;width:2px;
@@ -425,6 +430,10 @@ const term = new Terminal({
      fallback for them costs nothing; a fallback mid-artwork costs seams. */
   fontFamily:"'JetBrains Mono', 'Apple Symbols', monospace", fontSize:13, lineHeight:1.0,
   cursorBlink:true, allowProposedApi:true, scrollback:0, /* tmux owns history */
+  // Only bites when the app has NOT grabbed the mouse (a plain shell); when it
+  // has, the doubling happens on the mouse report in onData instead. The two
+  // paths are mutually exclusive, so scrolling is never doubled twice.
+  scrollSensitivity:2,
   theme:THEMES[theme], macOptionIsMeta:true,
   // NO minimumContrastRatio. It floors foreground contrast against the
   // background, which reads as a fix for text and as vandalism for ART: the
@@ -552,7 +561,17 @@ const scheduleResize = () => {
 }
 new ResizeObserver(scheduleResize).observe($('term'))
 addEventListener('resize', scheduleResize)
-term.onData(d => { if (ws?.readyState === 1) ws.send(JSON.stringify({t:'in',d})) })
+/* Claude Code grabs the mouse (mouseTrackingMode "any"), so a wheel notch does
+   not scroll xterm's viewport — it leaves as an SGR mouse report and the app
+   decides the step. xterm's scrollSensitivity never gets a look in: measured,
+   one notch produced byte-identical output at sensitivity 1 and 2. Doubling
+   the REPORT is what actually doubles the scroll. 64/65 are wheel up/down and
+   66/67 horizontal; clicks, drags and motion are left alone. */
+const WHEEL_REPORT = /^\x1b\[<6[4-7];\d+;\d+[Mm]$/
+term.onData(d => {
+  if (ws?.readyState !== 1) return
+  ws.send(JSON.stringify({t:'in', d: WHEEL_REPORT.test(d) ? d + d : d}))
+})
 
 /* ── busy / done ──────────────────────────────────────────────────────────
    State is derived SERVER-side in refresh() for every session, attached or not.
