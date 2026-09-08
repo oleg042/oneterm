@@ -15,7 +15,7 @@
  * can disagree with reality. `tmux ls` IS the list.
  */
 import { createServer } from 'node:http'
-import { readFile, writeFile, mkdir, access, realpath } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, access, realpath, stat } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -361,11 +361,22 @@ async function readProjects() {
   const base = join(HOME, 'Projects')
   try {
     const { stdout } = await execFileP('find', [base, '-maxdepth', '1', '-type', 'd'])
-    return stdout.split('\n').filter(p => p && p !== base)
+    const kids = stdout.split('\n').filter(p => p && p !== base)
       .map(p => ({ path: p, name: p.split('/').pop() }))
       .filter(p => !p.name.startsWith('.'))          // .claude, .playwright-mcp, ...
       .sort((a, b) => a.name.localeCompare(b.name))
+    // The roots are real working directories too — listing only their children
+    // made ~/Projects itself, the place you sit to work ACROSS projects,
+    // unreachable from the picker.
+    return [{ path: base, name: 'Projects', root: true },
+            { path: HOME,  name: 'Home',     root: true },
+            ...kids]
   } catch { return [] }
+}
+
+/** Is this an existing directory we can start a session in? */
+async function isDir(f) {
+  try { return (await stat(f)).isDirectory() } catch { return false }
 }
 
 /* ── http ─────────────────────────────────────────────────────────────────── */
@@ -507,9 +518,21 @@ async function route(req, res) {
     await tmux(['kill-session', '-t', PREFIX + url.searchParams.get('id')])
     return json(res, { ok: true })
   }
+  if (p === '/resolve') {
+    // expand ~ and check it before the client offers it as a destination
+    let f = (url.searchParams.get('path') || '').trim()
+    if (f.startsWith('~')) f = join(HOME, f.slice(1))
+    if (!f.startsWith('/')) return json(res, { ok: false })
+    return json(res, { ok: await isDir(f), path: f })
+  }
   if (p === '/new') {
     const q = url.searchParams
     const id = 's' + Date.now().toString(36)
+    const wantCwd = q.get('cwd') || HOME
+    if (!(await isDir(wantCwd))) {
+      res.writeHead(400, {'content-type':'application/json'})
+      return res.end(JSON.stringify({ error: 'no_such_directory', cwd: wantCwd }))
+    }
     await createSession({ id, cmd: q.get('cmd') || 'shell',
       cwd: q.get('cwd') || HOME, cols: Number(q.get('cols')), rows: Number(q.get('rows')),
       skip: q.get('skip') === '1' })

@@ -265,6 +265,8 @@ footer .skipwarn{color:var(--warn)}
 .row.sel{background:var(--accent-soft)}
 .row.dim .t,.row.dim .s{opacity:.45}
 .row.dim .kind{opacity:.55}
+.row.isroot .kind,.row.ispath .kind{color:var(--ok)}
+.row.isbad .kind,.row.isbad .s{color:var(--err)}
 .row .kind{flex:none;width:94px;white-space:nowrap;font-family:var(--mono);font-size:9px;letter-spacing:.1em;
   text-transform:uppercase;color:var(--accent)}
 .row .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -377,7 +379,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
       <span style="flex:1"></span>
       <span style="font-size:11px;color:var(--faint)" id="folderCount"></span>
     </div>
-    <div class="qwrap"><input class="q" id="nq" placeholder="Which folder?" autocomplete="off" spellcheck="false"/></div>
+    <div class="qwrap"><input class="q" id="nq" placeholder="Which folder? (or type a path)" autocomplete="off" spellcheck="false"/></div>
     <div class="rows" id="nlist"></div>
     <div class="hintline">
       <span><kbd>&#8593;&#8595;</kbd> move</span><span><kbd>&#8629;</kbd> open</span><span><kbd>esc</kbd> close</span>
@@ -834,7 +836,7 @@ async function switchTo(id){
 async function newSession(cmd, cwd, skip){
   const r = await post('/new?cmd=' + cmd + '&cwd=' + encodeURIComponent(cwd || '') +
     '&skip=' + (skip ? 1 : 0) + '&cols=' + term.cols + '&rows=' + term.rows)
-  if (!r?.id) return
+  if (!r?.id){ toast(r?.error === 'no_such_directory' ? 'no such directory: ' + (r.cwd||'') : "couldn't start that session"); return }
   hideOverlay(); await refresh()
   active = r.id; localStorage.setItem('oneterm-active', r.id); paintRail(); connect(r.id)
 }
@@ -932,9 +934,31 @@ function paletteItems(){
     out.push({kind:'skill', t:'/' + k.name, s:k.desc, run:() => typeIn('/' + k.name + ' ')})
   return out
 }
-const newItems = () => projects.map(p => ({
-  kind: newCmd === 'claude' ? 'claude' : 'shell', t:p.name, s:tilde(p.path),
-  run:() => newSession(newCmd, p.path, skipOn())}))
+function newItems(){
+  const out = projects.map(p => ({
+    kind: p.root ? 'root' : (newCmd === 'claude' ? 'claude' : 'shell'),
+    t: p.name, s: tilde(p.path),
+    run: () => newSession(newCmd, p.path, skipOn())}))
+  /* Anywhere on disk, not just ~/Projects and not just its children. Typing a
+     path offers it directly once the server confirms the directory exists. */
+  const q = $('nq')?.value.trim() || ''
+  if (/^[~/]/.test(q)) out.unshift({
+    kind: 'path', t: q, always: true,          // never filtered by its own query
+    s: typedPathOk === q ? 'open here' : typedPathChecked === q ? 'no such directory' : 'checking…',
+    bad: typedPathChecked === q && typedPathOk !== q,
+    run: () => { typedPathOk === q ? newSession(newCmd, q, skipOn())
+                                   : toast('no such directory: ' + q) }})
+  return out
+}
+let typedPathOk = null, typedPathChecked = null
+async function checkTypedPath(){
+  const q = $('nq').value.trim()
+  if (!/^[~/]/.test(q)) { typedPathOk = typedPathChecked = null; return }
+  const r = await api('/resolve?path=' + encodeURIComponent(q))
+  if ($('nq').value.trim() !== q) return          // the query moved on
+  typedPathChecked = q; typedPathOk = r?.ok ? q : null
+  render()
+}
 function typeIn(t){ if (ws?.readyState === 1) ws.send(JSON.stringify({t:'in',d:t})); term.focus() }
 /* Unranked subsequence over name+description+path meant a 6-char query barely
    filtered: "commit" matched "cosmic-drift" (c-o-m-i-t) and every project with
@@ -960,7 +984,7 @@ function render(){
   const isP = openSheet === 'palette'
   const q = (isP ? $('pq') : $('nq')).value.trim().toLowerCase()
   items = (isP ? paletteItems() : newItems())
-    .map(it => [fuzzy(q, it), it]).filter(x => x[0] > 0)
+    .map(it => [it.always ? Infinity : fuzzy(q, it), it]).filter(x => x[0] > 0)
     // 80 truncated the skills list, which breaks the one case it exists for:
     // browsing when you do NOT know the name. The rows are cheap; show them.
     .sort((a,b) => b[0] - a[0]).map(x => x[1]).slice(0, 300)
@@ -968,7 +992,9 @@ function render(){
   const box = $(isP ? 'plist' : 'nlist')
   const starred = paletteMode === 'skill' && isP
   box.innerHTML = items.length ? items.map((it,i) =>
-    '<div class="row' + (i === sel ? ' sel' : '') + (it.dim ? ' dim' : '') + '" data-i="' + i + '">' +
+    '<div class="row' + (i === sel ? ' sel' : '') + (it.dim ? ' dim' : '') +
+      (it.kind === 'root' ? ' isroot' : it.kind === 'path' ? (it.bad ? ' isbad' : ' ispath') : '') +
+      '" data-i="' + i + '">' +
     (starred ? '<span class="star' + (favs.has(it.path) ? ' on' : '') + '" data-fav="' +
        esc(it.path) + '" title="favourite">' + (favs.has(it.path) ? '★' : '☆') + '</span>' : '') +
     (starred ? '<span class="open" data-open="' + i + '" title="Read this skill">&#9636;</span>' : '') +
@@ -1001,7 +1027,7 @@ function render(){
 function go(i){ const it = items[i]; if (!it) return; closeSheet(); it.run() }
 
 $('pq').oninput = () => { sel = 0; render() }
-$('nq').oninput = () => { sel = 0; render() }
+$('nq').oninput = () => { sel = 0; render(); checkTypedPath() }
 for (const b of $('cmdseg').children) b.onclick = () => {
   newCmd = b.dataset.cmd
   for (const o of $('cmdseg').children) o.setAttribute('aria-pressed', String(o === b))
