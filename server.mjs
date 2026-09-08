@@ -378,7 +378,8 @@ const VENDOR = {
   '/vendor/addon-search.js': '@xterm/addon-search/lib/addon-search.js',
 }
 const TYPES = { '.html':'text/html', '.css':'text/css', '.js':'text/javascript',
-                '.json':'application/json', '.png':'image/png', '.svg':'image/svg+xml' }
+                '.json':'application/json', '.png':'image/png', '.svg':'image/svg+xml',
+                '.woff2':'font/woff2' }
 
 const json = (res, body) => {
   res.writeHead(200, { 'content-type': 'application/json' })

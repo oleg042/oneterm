@@ -8,7 +8,19 @@
 <link rel="stylesheet" href="/vendor/xterm.css"/>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* The terminal font is served from here, not Google Fonts. Google's JetBrains
+   Mono is a LATIN SUBSET: it contains no Block Elements (U+2580-259F) and no
+   Box Drawing (U+2500-257F), so every block in the Claude Code mascot, every
+   rule and every progress bar was being drawn by the fallback font instead —
+   two fonts with different metrics interleaved, which is what put seams through
+   the artwork. This is the complete font, so all of that comes from ONE face. */
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;
+  font-display:block;src:url('/fonts/JetBrainsMono-Regular.woff2') format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;
+  font-display:block;src:url('/fonts/JetBrainsMono-Bold.woff2') format('woff2')}
+</style>
 <style>
 /* ───────────────────────────────────────────────────────────────────────────
    Japandi: warm paper + sumi ink, one restrained vermillion (朱 shu), hairlines
@@ -23,7 +35,7 @@
   --ok:#5B7F5B; --warn:#B08A2E; --err:#A8402F;
   --r:4px; --ease:cubic-bezier(.22,.61,.36,1); --sp:180ms;
   --ui:'Zen Kaku Gothic New',system-ui,-apple-system,sans-serif;
-  --mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
+  --mono:'JetBrains Mono','Apple Symbols',monospace;
 }
 html[data-theme="dark"]{
   --paper:#14130F; --rail:#1A1815; --raise:#221F1B; --sink:#0E0D0B;
@@ -398,7 +410,10 @@ let theme = localStorage.getItem('oneterm-theme')
 document.documentElement.dataset.theme = theme
 
 const term = new Terminal({
-  fontFamily:"'JetBrains Mono', Menlo, monospace", fontSize:13, lineHeight:1.18,
+  /* One face for everything that TILES. JetBrains Mono lacks exactly three
+     glyphs Claude Code uses — ✻ ⏺ ⎿ — and those are standalone symbols, so a
+     fallback for them costs nothing; a fallback mid-artwork costs seams. */
+  fontFamily:"'JetBrains Mono', 'Apple Symbols', monospace", fontSize:13, lineHeight:1.0,
   cursorBlink:true, allowProposedApi:true, scrollback:0, /* tmux owns history */
   theme:THEMES[theme], macOptionIsMeta:true,
   // NO minimumContrastRatio. It floors foreground contrast against the
