@@ -101,6 +101,32 @@ launchctl kickstart -k "gui/$UID/$LABEL" >/dev/null 2>&1
 wait_up 24 && ok "came back from a cold kickstart" || bad "did not come back"
 marker_alive && ok "session survived the reload too" || bad "session lost"
 
+# ── 5. a new session must be born UTF-8 ─────────────────────────────────────
+# This shipped broken and hid for a long time, because it was set on the attach
+# CLIENT and on the host, so everything on screen looked right — while the shell
+# and Claude Code inside every session ran under LC_CTYPE="C". A tmux session
+# inherits from the tmux SERVER, not from whoever asked for it. The symptom was
+# pasting a table into Claude Code and getting "‚îÇ" back for every "│": the
+# same UTF-8 bytes read one at a time and re-encoded.
+echo
+echo "5. locale of a freshly created session"
+NEWID=$(curl -sf --max-time 5 -X POST -H "Origin: http://127.0.0.1:$PORT" \
+        "$B/new?cmd=shell&cwd=/tmp" 2>/dev/null | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+if [ -z "$NEWID" ]; then
+  bad "could not create a session to test"
+else
+  sleep 1.2
+  "$TMUX" send-keys -t "oneterm_$NEWID" 'echo "CTYPE=$(locale | grep LC_CTYPE)"' Enter
+  sleep 1.2
+  LOC=$("$TMUX" capture-pane -p -t "oneterm_$NEWID" | grep -m1 '^CTYPE=' || true)
+  case "$LOC" in
+    *UTF-8*) ok "new session is UTF-8 ($LOC)" ;;
+    *)       bad "new session is NOT UTF-8 ($LOC) — multibyte paste will corrupt" ;;
+  esac
+  curl -sf --max-time 5 -X POST -H "Origin: http://127.0.0.1:$PORT" \
+       "$B/kill?id=$NEWID" >/dev/null 2>&1
+fi
+
 # ── cleanup ────────────────────────────────────────────────────────────────
 "$TMUX" kill-session -t "$SESS" 2>/dev/null
 echo

@@ -36,6 +36,9 @@ const PREFIX = 'oneterm_'
 const TMUX = ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux']
   .find(p => existsSync(p)) ?? 'tmux'
 const SHELL = process.env.SHELL || '/bin/zsh'
+/* One locale, used for the session, the attach client and the tmux server, so
+ * they cannot disagree. launchd supplies no LANG, so the fallback is real. */
+const LOCALE = process.env.LC_ALL || process.env.LANG || 'en_US.UTF-8'
 
 /** Run a command through a LOGIN shell so the user's real PATH applies. */
 const loginShell = (cmd) => [SHELL, '-l', '-c', cmd]
@@ -209,7 +212,23 @@ async function createSession({ id, cmd, cwd, cols, rows, skip }) {
   // -e: the inner shell inherits the HOST's environment, not the attach
   //     client's — so ONETERM_* set at attach time never reached the shell.
   //     Stamp them at birth so scripts and hooks inside can tell where they are.
+  /* The locale has to be stamped HERE, on the session itself.
+   *
+   * It was already set on the attach client (see the pty env below) and on the
+   * host via the plist — which is why the DISPLAY always looked right and this
+   * hid for so long. But a tmux session inherits from the tmux SERVER, not from
+   * whoever asks for the session, and that server's environment has no LANG at
+   * all. So every shell and every Claude Code inside oneterm has been running
+   * under LC_CTYPE="C".
+   *
+   * Measured symptom: paste a table into Claude Code and "│" (UTF-8 e2 94 82)
+   * comes back as "‚îÇ" — those same three bytes read one-at-a-time and
+   * re-encoded, which is exactly what a C locale does to multibyte input. The
+   * bytes on the wire were provably fine; the decoder at the far end was not.
+   * zsh in the same session also refuses printf '│' with "character not
+   * in range". */
   await tmux(['-u', 'new-session', '-d', '-s', name, '-c', cwd,
+              '-e', `LANG=${LOCALE}`, '-e', `LC_ALL=${LOCALE}`,
               '-e', 'ONETERM=1', '-e', `ONETERM_SESSION=${id}`,
               '-x', String(cols || 120), '-y', String(rows || 32),
               ...loginShell(inner)])
@@ -646,8 +665,7 @@ wss.on('connection', async (ws, req) => {
     term = pty.spawn(TMUX, ['-u', 'attach-session', '-t', name], {
       name: 'xterm-256color', cols, rows, cwd: HOME,
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor',
-             LANG: process.env.LANG || 'en_US.UTF-8',
-             LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
+             LANG: LOCALE, LC_ALL: LOCALE,
              // 15;0 = light bg, 0;15 = dark bg. Apps that respect COLORFGBG
              // pick a readable palette themselves rather than being overridden.
              COLORFGBG: q.get('light') === '1' ? '0;15' : '15;0',
@@ -692,5 +710,16 @@ process.on('unhandledRejection', (e) => {
   process.exit(1)
 })
 
-server.listen(PORT, '127.0.0.1', () =>
-  console.log(`oneterm → http://localhost:${PORT}  (tmux: ${TMUX})`))
+/* Belt and braces for the locale hole above: stamp the tmux SERVER too, so
+ * anything created outside createSession — a new window, a pane split, a
+ * session made by hand — is born UTF-8 as well. Sessions already running keep
+ * the environment their processes started with; those have to be recreated. */
+async function stampServerLocale() {
+  await tmux(['set-environment', '-g', 'LANG', LOCALE])
+  await tmux(['set-environment', '-g', 'LC_ALL', LOCALE])
+}
+
+server.listen(PORT, '127.0.0.1', async () => {
+  await stampServerLocale()
+  console.log(`oneterm → http://localhost:${PORT}  (tmux: ${TMUX}, locale: ${LOCALE})`)
+})
