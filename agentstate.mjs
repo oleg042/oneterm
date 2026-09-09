@@ -13,12 +13,28 @@
  * Persistence and timers stay in server.mjs; nothing here touches the clock
  * except through an injected `now`. */
 
-/** Working if ANY agent in the session is working. undefined = never heard. */
-export function hookWorking(entry) {
+/* An agent that dies without firing Stop — killed, crashed, or replaced —
+ * leaves working=true behind forever, and because working is ANY agent, one
+ * dead bucket pins the whole session busy. Observed in the wild within minutes
+ * of shipping: a legacy bucket produced "[hook] stop working=1", a stop event
+ * that left the session running. Long turns genuinely go quiet for 40+ minutes
+ * with no events at all, so this has to be far longer than a turn, not shorter
+ * than one. */
+export const AGENT_TTL_MS = 4 * 60 * 60 * 1000
+
+/* If the hook said "working" and the pane has looked idle for this long, the
+ * stop event was probably lost — the host is restartable, and a Stop fired
+ * while it was down goes nowhere. Fall back to the pane rather than pin a
+ * session busy forever. Generous, because real turns pass 40 minutes. */
+export const MISSED_STOP_MS = 60_000
+
+/** Working if ANY live agent in the session is working. undefined = never heard. */
+export function hookWorking(entry, now = Date.now(), ttlMs = AGENT_TTL_MS) {
   const agents = entry?.agents
   if (!agents) return undefined
   const states = Object.values(agents)
-    .map(a => a?.working)
+    .filter(a => a && (a.at === undefined || now - a.at < ttlMs))
+    .map(a => a.working)
     .filter(w => w !== undefined)
   if (!states.length) return undefined
   return states.some(Boolean)
@@ -36,6 +52,11 @@ export function applyEvent(entry, { action, claudeSession, transcript }, now = D
   // cannot declare the first one finished. No id means python3 was missing and
   // we only got id+action; bucket those together rather than drop the event.
   const key = claudeSession || '_'
+  /* The '_' bucket only exists when python3 was unavailable, or as migrated
+     state from before agents were tracked separately. The moment a real Claude
+     session id shows up for this session, '_' can only be stale — and a stale
+     bucket stuck on working=true pins the session busy through the OR above. */
+  if (claudeSession && entry.agents._) delete entry.agents._
   const agent = (entry.agents[key] ??= {})
   agent.at = now
   if (action === 'start') agent.working = true
@@ -50,7 +71,8 @@ export function applyEvent(entry, { action, claudeSession, transcript }, now = D
  * THE RULE: the hook may only ever ADD "working". It can never veto the pane.
  * A hook event is proof that something happened, never proof that nothing is.
  */
-export function decideWorking({ hook, paneWorking, regexWorking, quietSince, now = Date.now(), missedStopMs }) {
+export function decideWorking({ hook, paneWorking, regexWorking, quietSince,
+                                now = Date.now(), missedStopMs = MISSED_STOP_MS }) {
   if (hook === true) {
     if (paneWorking || regexWorking) {
       return { working: true, from: 'hook', why: 'hook:working', quietSince: null, latched: false }

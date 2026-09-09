@@ -23,25 +23,45 @@ console.log('\n1. aggregation across agents in one tmux session')
      'all agents stopped → false')
 }
 
+console.log('\n1b. stale agents cannot pin a session busy')
+{
+  const HOUR = 3600_000, now = 10 * HOUR
+  is(hookWorking({ agents: { dead: { working: true, at: now - 5 * HOUR } } }, now), undefined,
+     'an agent that died 5h ago without a Stop is ignored entirely')
+  is(hookWorking({ agents: { dead: { working: true, at: now - 5 * HOUR },
+                             live: { working: false, at: now } } }, now), false,
+     'a dead working bucket cannot outvote the live stopped one')
+  is(hookWorking({ agents: { slow: { working: true, at: now - 40 * 60_000 } } }, now), true,
+     'a genuinely long turn (40m, no events) is still trusted')
+
+  // THE OBSERVED BUG: legacy '_' bucket + a real claude session
+  const e = { agents: { _: { working: true, at: now } } }
+  applyEvent(e, { action: 'stop', claudeSession: 'real-1' }, now)
+  is(Object.keys(e.agents).join(','), 'real-1',
+     "a real claude id retires the '_' bucket rather than living alongside it")
+  is(hookWorking(e, now), false,
+     'so a stop actually means stopped — this logged "stop working=1" in the wild')
+}
+
 console.log('\n2. folding events')
 {
   const e = applyEvent(undefined, { action: 'session', claudeSession: 's1' }, 1000)
-  is(hookWorking(e), undefined, 'SessionStart carries no working state')
+  is(hookWorking(e, 1000), undefined, 'SessionStart carries no working state')
   applyEvent(e, { action: 'start', claudeSession: 's1' }, 2000)
-  is(hookWorking(e), true, 'start → working')
+  is(hookWorking(e, 2000), true, 'start → working')
   applyEvent(e, { action: 'stop', claudeSession: 's1' }, 3000)
-  is(hookWorking(e), false, 'stop → not working')
+  is(hookWorking(e, 3000), false, 'stop → not working')
 
   // second claude in the same tmux session
   applyEvent(e, { action: 'start', claudeSession: 's2' }, 4000)
-  is(hookWorking(e), true, 'a second agent starting revives the session')
+  is(hookWorking(e, 4000), true, 'a second agent starting revives the session')
   applyEvent(e, { action: 'stop', claudeSession: 's1' }, 5000)
-  is(hookWorking(e), true, "the first agent stopping AGAIN cannot end the second's turn")
+  is(hookWorking(e, 5000), true, "the first agent stopping AGAIN cannot end the second's turn")
   applyEvent(e, { action: 'stop', claudeSession: 's2' }, 6000)
-  is(hookWorking(e), false, 'both stopped → false')
+  is(hookWorking(e, 6000), false, 'both stopped → false')
 
   const noPy = applyEvent(undefined, { action: 'start' }, 1000)
-  is(hookWorking(noPy), true, 'an event with no claudeSession (no python3) still counts')
+  is(hookWorking(noPy, 1000), true, 'an event with no claudeSession (no python3) still counts')
 }
 
 console.log('\n3. THE REPORTED BUG — a turn that begins with no human prompt')

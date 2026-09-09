@@ -70,6 +70,18 @@ if ! node "$DIR/test/agentstate.test.mjs" >/tmp/oneterm-agentstate.log 2>&1; the
 fi
 echo "  agent-state tests pass ($(grep -c '✓' /tmp/oneterm-agentstate.log) checks)"
 
+# The hook runs inside Claude Code's critical path on EVERY session on the
+# machine, so its failure modes matter more than its features. One of them —
+# draining stdin before gating — decides whether a big pasted prompt gives
+# Claude Code a broken pipe.
+if ! bash "$DIR/test/hook-script.test.sh" >/tmp/oneterm-hookscript.log 2>&1; then
+  echo
+  echo "✗ hook script tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-hookscript.log | tail -20
+  exit 1
+fi
+echo "  hook script tests pass ($(grep -c '✓' /tmp/oneterm-hookscript.log) checks)"
+
 OLD_PID=$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/health" 2>/dev/null \
           | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
 SESSIONS_BEFORE=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^oneterm_' || echo 0)

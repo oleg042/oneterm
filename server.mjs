@@ -135,6 +135,33 @@ function settle(name, ms = 1800) {
   workingUntil.delete(name)      // and drop a latch a reflow would have set
 }
 
+/**
+ * The PANE half of the answer: is this session working according to its screen,
+ * with the latch applied. Arms the latch as a side effect; returns the verdict.
+ *
+ * The latch is what makes a sampled signal usable — a single missed frame of an
+ * animating pane is a blink, not an ending, and every blink used to read as
+ * "the run finished" and ring the bell.
+ */
+function panePulse(s, tail, c) {
+  const now = Date.now()
+  const latchMs = s.cmd === 'claude' ? LATCH_CLAUDE : LATCH_SHELL
+  if (s.cmd === 'claude') {
+    if (c.working) workingUntil.set(s.name, now + latchMs)
+  } else {
+    /* Shells print no run marker, so fall back to "the pane changed since last
+     * poll". tmux's #{session_activity} was tried first and rejected: it does
+     * not reliably tick for a DETACHED session, so a busy agent read as idle.
+     * Comparing the tail works either way. */
+    const settling = now < (settleUntil.get(s.name) ?? 0)
+    const prev = lastTail.get(s.name)
+    lastTail.set(s.name, tail)
+    if (!settling && prev !== undefined && prev !== tail)
+      workingUntil.set(s.name, now + latchMs)
+  }
+  return { latchMs, working: now < (workingUntil.get(s.name) ?? 0) }
+}
+
 /* ── agent state, reported by Claude Code itself ──────────────────────────
  * Everything below this used to be inferred by matching regexes against the
  * pane. That is now the FALLBACK. Claude Code publishes lifecycle events, and
@@ -157,25 +184,33 @@ const HOOK_FILE = join(process.env.HOME, '.oneterm', 'agent-state.json')
  * would declare the other one idle while it was still running. Working means
  * ANY agent in the session is working. */
 const hookState = new Map()      // our id -> { agents: {claudeSession: {working, at}}, at, transcript }
-const hookWorking = id => agentsWorking(hookState.get(id))
-/* If the hook said "working" and the pane has looked idle for this long, the
- * stop event was probably lost — the host is restartable and a Stop fired
- * while it was down goes nowhere. Fall back to the regexes rather than pin a
- * session busy forever. Generous, because real runs pass 40 minutes. */
-const MISSED_STOP_MS = 60_000
+const hookWorking = id => agentsWorking(hookState.get(id), Date.now())
 const hookQuiet = new Map()      // name -> first time the pane contradicted the hook
 
 async function loadHookState() {
   try {
     const raw = JSON.parse(await readFile(HOOK_FILE, 'utf8'))
+    let cleaned = false
     for (const [id, v] of Object.entries(raw)) {
       // Migrate the first shape, which held one boolean per session before
       // concurrent agents in a single tmux session were accounted for.
-      if (v && !v.agents) hookState.set(id, { at: v.at, transcript: v.transcript,
-                                              agents: { _: { working: v.working, at: v.at } } })
-      else hookState.set(id, v)
+      if (v && !v.agents) { cleaned = true; hookState.set(id, { at: v.at, transcript: v.transcript,
+                                              agents: { _: { working: v.working, at: v.at } } }) }
+      else {
+        /* Retire the anonymous bucket at LOAD as well as on the next event.
+           It only exists for migrated state or a machine without python3, and
+           alongside a real Claude id it can only be stale — a stale bucket
+           stuck on working=true pins the whole session busy, because working
+           is ANY agent. Waiting for the next event to clean it up leaves that
+           lie in place for however long the session stays quiet. */
+        if (v?.agents?._ && Object.keys(v.agents).length > 1) { delete v.agents._; cleaned = true }
+        hookState.set(id, v)
+      }
     }
-    console.log(`[hook] restored state for ${hookState.size} session(s)`)
+    // Migration and retirement above only touched MEMORY. Write once so the
+    // file matches, or every boot repeats the same cleanup on the same rows.
+    if (cleaned) saveHookState()
+    console.log(`[hook] restored ${hookState.size} session(s)${cleaned ? ', cleaned legacy buckets' : ''}`)
   } catch { /* first run, or unreadable — regex fallback covers it */ }
 }
 let saveTimer = null
@@ -244,58 +279,22 @@ async function annotateWaiting(list) {
   await Promise.all(list.map(async (s) => {
     try {
       const tail = await paneTail(s.name)
-      /* One pure call, shared with the tests. FOREGROUND = a turn is running.
-       * BACKGROUND = the main loop is idle at an empty prompt but a
-       * backgrounded shell is still going. Both are "working"; only the
-       * foreground one may override a live prompt, so a permission prompt with
-       * a shell running behind it still reads as "needs you". */
-      const c = classify(tail, s.cmd)
-      s.waiting = c.waiting
-      const settling = Date.now() < (settleUntil.get(s.name) ?? 0)
-      /* The client subtracts this from a run's measured span, so a latch can be
-         generous without turning a 0.2s command into a latch-long "run". */
-      s.latchMs = s.cmd === 'claude' ? LATCH_CLAUDE : LATCH_SHELL
-      if (s.cmd === 'claude') {
-        if (c.working) workingUntil.set(s.name, Date.now() + s.latchMs)
-      } else {
-        /* Shells print no run marker, so fall back to "the pane changed since
-         * last poll". tmux's #{session_activity} was tried first and rejected:
-         * it does not reliably tick for a DETACHED session, so a busy agent
-         * read as idle. Comparing the tail works either way. */
-        const prev = lastTail.get(s.name)
-        lastTail.set(s.name, tail)
-        if (!settling && prev !== undefined && prev !== tail)
-          workingUntil.set(s.name, Date.now() + s.latchMs)
-      }
-      // one latch, both paths — the shell branch used to have none
-      const regexWorking = Date.now() < (workingUntil.get(s.name) ?? 0)
-      let why = s.cmd === 'claude' ? c.why : 'tail-diff'
+      const c    = classify(tail, s.cmd)          // pure, shared with the tests
+      const pane = panePulse(s, tail, c)          // pane + latch bookkeeping
 
-      /* The hook can only ever ADD "working". It can never veto the pane.
-       *
-       * That asymmetry is deliberate and was learned the hard way, twice in
-       * one evening. UserPromptSubmit is NOT the only way a turn begins: auto
-       * mode, /goal loops and resumed work all start turns with no human
-       * prompt. So a session that had legitimately Stopped can be running
-       * again with no start event to announce it. Treating Stop as
-       * authoritative pinned exactly that session to "idle" while it visibly
-       * ran for nine minutes — a regression on the regexes it replaced, since
-       * pure pane matching self-heals on the very next poll.
-       *
-       * Stop still earns its place: it CLEARS the latch (see applyAgentEvent),
-       * so the instant the pane also falls quiet the answer is "not working"
-       * with none of the 12-second lag the latch used to impose. */
+      // The rule this implements lives in agentstate.mjs, next to the code.
       const d = decideWorking({
         hook: hookWorking(s.id),
         paneWorking: c.working,
-        regexWorking,
+        regexWorking: pane.working,
         quietSince: hookQuiet.get(s.name) ?? null,
-        missedStopMs: MISSED_STOP_MS,
       })
-      s.working = d.working
-      if (!d.latched) s.latchMs = 0        // an event needs no blink tolerance
-      if (d.why) why = d.why
-      s.stateFrom = d.from                 // the ACTUAL decider, not "a hook exists"
+
+      s.working   = d.working
+      s.waiting   = c.waiting
+      s.latchMs   = d.latched ? pane.latchMs : 0  // an event needs no blink tolerance
+      s.stateFrom = d.from                        // the ACTUAL decider
+
       if (d.quietSince === null) hookQuiet.delete(s.name)
       else hookQuiet.set(s.name, d.quietSince)
 
@@ -303,7 +302,8 @@ async function annotateWaiting(list) {
       // for the claude path). Background work is not printing, so it does not
       // hide a prompt: a shell can run behind a question that is blocked on you.
       if (s.working && s.cmd !== 'claude') s.waiting = false
-      logState(s, why, tail)
+
+      logState(s, d.why ?? (s.cmd === 'claude' ? c.why : 'tail-diff'), tail)
     } catch (e) {
       /* Log this path too. The client still receives working=false here and can
          chime on it, and without a line the one stray sound nobody can explain
