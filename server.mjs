@@ -15,7 +15,7 @@
  * can disagree with reality. `tmux ls` IS the list.
  */
 import { createServer } from 'node:http'
-import { readFile, writeFile, mkdir, access, realpath, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, access, realpath, stat, rename } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -26,6 +26,10 @@ import pty from 'node-pty'
 // Detection lives in its own module so test/detect.test.mjs runs the patterns
 // that actually ship, against panes captured from live sessions.
 import { classify, liveTail, LIVE_LINES } from './detect.mjs'
+// Same reason as detect.mjs: the tests must run the decision that ships, not a
+// copy of it. This one has been wrong twice, so it is the last place to allow
+// a second implementation to drift.
+import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agentstate.mjs'
 
 const execFileP = promisify(execFile)
 const ROOT = dirname(fileURLToPath(import.meta.url))
@@ -131,6 +135,85 @@ function settle(name, ms = 1800) {
   workingUntil.delete(name)      // and drop a latch a reflow would have set
 }
 
+/* ── agent state, reported by Claude Code itself ──────────────────────────
+ * Everything below this used to be inferred by matching regexes against the
+ * pane. That is now the FALLBACK. Claude Code publishes lifecycle events, and
+ * hooks/oneterm-agent-state.sh reports them here, so a turn boundary is a fact
+ * rather than a guess about a spinner.
+ *
+ * PERSISTED, and that is not incidental: this host is designed to be
+ * disposable, and it restarts constantly. In-memory state would be lost on
+ * every restart and every session would silently drop back to regex — the
+ * exact failure this replaces, just rarer and therefore harder to notice. */
+// process.env.HOME, not the HOME const — that is declared further down the
+// file and this line runs at module load, so referencing it would be a
+// temporal dead zone ReferenceError at boot. node --check does not catch it.
+const HOOK_FILE = join(process.env.HOME, '.oneterm', 'agent-state.json')
+/* Keyed by OUR session id, but each entry holds a map of CLAUDE session ids,
+ * because ONETERM_SESSION is stamped on the tmux session and is therefore
+ * inherited by every pane, window and subprocess inside it. Two `claude`
+ * processes in one tmux session — a second window, or a nested invocation from
+ * a script — would otherwise share one boolean, and whichever finished last
+ * would declare the other one idle while it was still running. Working means
+ * ANY agent in the session is working. */
+const hookState = new Map()      // our id -> { agents: {claudeSession: {working, at}}, at, transcript }
+const hookWorking = id => agentsWorking(hookState.get(id))
+/* If the hook said "working" and the pane has looked idle for this long, the
+ * stop event was probably lost — the host is restartable and a Stop fired
+ * while it was down goes nowhere. Fall back to the regexes rather than pin a
+ * session busy forever. Generous, because real runs pass 40 minutes. */
+const MISSED_STOP_MS = 60_000
+const hookQuiet = new Map()      // name -> first time the pane contradicted the hook
+
+async function loadHookState() {
+  try {
+    const raw = JSON.parse(await readFile(HOOK_FILE, 'utf8'))
+    for (const [id, v] of Object.entries(raw)) {
+      // Migrate the first shape, which held one boolean per session before
+      // concurrent agents in a single tmux session were accounted for.
+      if (v && !v.agents) hookState.set(id, { at: v.at, transcript: v.transcript,
+                                              agents: { _: { working: v.working, at: v.at } } })
+      else hookState.set(id, v)
+    }
+    console.log(`[hook] restored state for ${hookState.size} session(s)`)
+  } catch { /* first run, or unreadable — regex fallback covers it */ }
+}
+let saveTimer = null
+function saveHookState() {
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(async () => {
+    try {
+      await mkdir(dirname(HOOK_FILE), { recursive: true })
+      /* Temp file + rename, the same as the settings installer. A plain write
+         truncated by a crash leaves invalid JSON, and loadHookState would then
+         discard EVERY session's state on the next boot — defeating the
+         persistence at precisely the moment it exists to survive. This host is
+         built to be killed, so that is not a hypothetical. */
+      const tmp = HOOK_FILE + '.tmp'
+      await writeFile(tmp, JSON.stringify(Object.fromEntries(hookState)))
+      await rename(tmp, HOOK_FILE)
+    } catch {}
+  }, 250)
+}
+/* start -> a turn began · stop -> it ended · session -> just the id linkage.
+ * SubagentStop never reaches here: the hook drops anything carrying agent_id. */
+function applyAgentEvent({ id, action, claudeSession, transcript }) {
+  if (!id) return false
+  const entry = applyEvent(hookState.get(id), { action, claudeSession, transcript })
+  hookState.set(id, entry)
+  /* A stop CLEARS the latch. That is what the event buys us: the pane's own
+     verdict becomes authoritative immediately instead of 12 seconds later.
+     If a turn is genuinely still running the next poll re-arms it. */
+  if (action === 'stop' && hookWorking(id) === false) workingUntil.delete(PREFIX + id)
+  hookQuiet.delete(PREFIX + id)
+  saveHookState()
+  const w = hookWorking(id)
+  console.log(`[hook] ${id} ${action}`
+    + (w === undefined ? '' : ` working=${w ? 1 : 0}`)
+    + (Object.keys(entry.agents).length > 1 ? ` (${Object.keys(entry.agents).length} agents)` : ''))
+  return true
+}
+
 /* There were NO logs, so a false chime could only be argued about, never
  * diagnosed. The sound fires client-side off these two booleans, so record
  * every flip together with the evidence that caused it: which pattern matched,
@@ -185,12 +268,42 @@ async function annotateWaiting(list) {
           workingUntil.set(s.name, Date.now() + s.latchMs)
       }
       // one latch, both paths — the shell branch used to have none
-      s.working = Date.now() < (workingUntil.get(s.name) ?? 0)
+      const regexWorking = Date.now() < (workingUntil.get(s.name) ?? 0)
+      let why = s.cmd === 'claude' ? c.why : 'tail-diff'
+
+      /* The hook can only ever ADD "working". It can never veto the pane.
+       *
+       * That asymmetry is deliberate and was learned the hard way, twice in
+       * one evening. UserPromptSubmit is NOT the only way a turn begins: auto
+       * mode, /goal loops and resumed work all start turns with no human
+       * prompt. So a session that had legitimately Stopped can be running
+       * again with no start event to announce it. Treating Stop as
+       * authoritative pinned exactly that session to "idle" while it visibly
+       * ran for nine minutes — a regression on the regexes it replaced, since
+       * pure pane matching self-heals on the very next poll.
+       *
+       * Stop still earns its place: it CLEARS the latch (see applyAgentEvent),
+       * so the instant the pane also falls quiet the answer is "not working"
+       * with none of the 12-second lag the latch used to impose. */
+      const d = decideWorking({
+        hook: hookWorking(s.id),
+        paneWorking: c.working,
+        regexWorking,
+        quietSince: hookQuiet.get(s.name) ?? null,
+        missedStopMs: MISSED_STOP_MS,
+      })
+      s.working = d.working
+      if (!d.latched) s.latchMs = 0        // an event needs no blink tolerance
+      if (d.why) why = d.why
+      s.stateFrom = d.from                 // the ACTUAL decider, not "a hook exists"
+      if (d.quietSince === null) hookQuiet.delete(s.name)
+      else hookQuiet.set(s.name, d.quietSince)
+
       // Actively PRINTING is never "needs you" (classify already applied that
       // for the claude path). Background work is not printing, so it does not
       // hide a prompt: a shell can run behind a question that is blocked on you.
       if (s.working && s.cmd !== 'claude') s.waiting = false
-      logState(s, s.cmd === 'claude' ? c.why : 'tail-diff', tail)
+      logState(s, why, tail)
     } catch (e) {
       /* Log this path too. The client still receives working=false here and can
          chime on it, and without a line the one stray sound nobody can explain
@@ -208,6 +321,14 @@ async function annotateWaiting(list) {
   for (const k of settleUntil.keys())  if (!live.has(k)) settleUntil.delete(k)
   for (const k of workingUntil.keys()) if (!live.has(k)) workingUntil.delete(k)
   for (const k of prevState.keys())    if (!live.has(k)) prevState.delete(k)
+  for (const k of hookQuiet.keys())    if (!live.has(k)) hookQuiet.delete(k)
+  // hookState is keyed by our session id, not the tmux name, and it is the one
+  // map that outlives the process — so pruning it is what stops the on-disk
+  // file growing for the life of the machine.
+  const liveIds = new Set(list.map(s => s.id))
+  let pruned = false
+  for (const k of hookState.keys()) if (!liveIds.has(k)) { hookState.delete(k); pruned = true }
+  if (pruned) saveHookState()
   return list
 }
 
@@ -237,7 +358,13 @@ async function createSession({ id, cmd, cwd, cols, rows, skip }) {
    * in range". */
   await tmux(['-u', 'new-session', '-d', '-s', name, '-c', cwd,
               '-e', `LANG=${LOCALE}`, '-e', `LC_ALL=${LOCALE}`,
+              /* ONETERM_SESSION is what gates the agent-state hook: it is
+                 registered globally in ~/.claude/settings.json and runs for
+                 every Claude Code on the machine, so it exits immediately
+                 unless it finds this. ONETERM_PORT tells it where to report,
+                 so a non-default PORT still works. */
               '-e', 'ONETERM=1', '-e', `ONETERM_SESSION=${id}`,
+              '-e', `ONETERM_PORT=${PORT}`,
               '-x', String(cols || 120), '-y', String(rows || 32),
               ...loginShell(inner)])
   const label = cwd.split('/').filter(Boolean).pop() || '~'
@@ -475,7 +602,8 @@ const LOCAL_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i
 const ALLOWED_ORIGINS = new Set([
   `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`,
 ])
-const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop', '/clientlog'])
+const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop', '/clientlog',
+                           '/agent-event'])
 
 function guard(req, res) {
   if (!LOCAL_HOST.test(req.headers.host || '')) {
@@ -515,6 +643,24 @@ async function route(req, res) {
   /* The chime decision is made in the browser; the state flip that caused it is
    * made here. Posting the decision back puts both in ONE log on ONE clock, so
    * a stray sound can be read off rather than reasoned about. */
+  /* Claude Code's own lifecycle events, relayed by hooks/oneterm-agent-state.sh.
+   * Already behind the same guard as every mutation: POST only, Host and Origin
+   * allowlisted, so a random page cannot forge a session's state. */
+  if (p === '/agent-event') {
+    const chunks = []; let n = 0
+    for await (const c of req) { chunks.push(c); n += c.length; if (n > 8192) { req.resume(); break } }
+    let m = null
+    try { m = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch {}
+    // Validate the id shape: it becomes a Map key and a filename-safe value,
+    // and an unbounded key space is how a long-lived process grows forever.
+    if (!m || typeof m.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(m.id)) {
+      res.writeHead(400, {'content-type':'application/json'})
+      return res.end(JSON.stringify({ error: 'bad_event' }))
+    }
+    applyAgentEvent(m)
+    return json(res, { ok: true })
+  }
+
   if (p === '/clientlog') {
     const chunks = []; let n = 0
     // push THEN check: testing first meant a single chunk over the cap left
@@ -767,5 +913,6 @@ async function stampServerLocale() {
 
 server.listen(PORT, '127.0.0.1', async () => {
   await stampServerLocale()
+  await loadHookState()
   console.log(`oneterm → http://localhost:${PORT}  (tmux: ${TMUX}, locale: ${LOCALE})`)
 })

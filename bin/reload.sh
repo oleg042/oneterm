@@ -48,6 +48,28 @@ if ! node "$DIR/test/detect.test.mjs" >/tmp/oneterm-detect.log 2>&1; then
 fi
 echo "  detection tests pass ($(grep -c '✓' /tmp/oneterm-detect.log) checks)"
 
+# The hook installer edits ~/.claude/settings.json, which Claude Code itself
+# reads and other tools also write to. A bug here breaks the agent, not just
+# oneterm, so it is gated like everything else. Runs against throwaway HOMEs.
+if ! node "$DIR/test/install-hooks.test.mjs" >/tmp/oneterm-hooks.log 2>&1; then
+  echo
+  echo "✗ hook installer tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-hooks.log | tail -25
+  exit 1
+fi
+echo "  hook installer tests pass ($(grep -c '✓' /tmp/oneterm-hooks.log) checks)"
+
+# The hook/pane decision has been wrong twice in opposite directions. It is a
+# pure module precisely so it can be gated here rather than found by a human
+# noticing a wrong dot.
+if ! node "$DIR/test/agentstate.test.mjs" >/tmp/oneterm-agentstate.log 2>&1; then
+  echo
+  echo "✗ agent-state tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-agentstate.log | tail -25
+  exit 1
+fi
+echo "  agent-state tests pass ($(grep -c '✓' /tmp/oneterm-agentstate.log) checks)"
+
 OLD_PID=$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/health" 2>/dev/null \
           | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
 SESSIONS_BEFORE=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^oneterm_' || echo 0)

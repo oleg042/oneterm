@@ -117,10 +117,25 @@ touch "$APP"                       # nudge Finder to re-read the bundle
 LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 [ -x "$LSREG" ] && "$LSREG" -f "$APP" 2>/dev/null
 
+# ── 3. the agent-state hook ─────────────────────────────────────────────────
+# Claude Code publishes lifecycle events; without this, oneterm falls back to
+# matching regexes against the pane, which is a guess about a UI nobody promised
+# to keep stable. The installer merges into ~/.claude/settings.json rather than
+# writing it, so another tool's hooks (herdr keeps one there) survive — and it
+# refuses outright if it cannot parse the file. A failure here must NOT fail the
+# whole install: the app still works, it just detects state the old way.
+if "$NODE" "$DIR/bin/install-hooks.mjs"; then
+  HOOKS_OK=1
+else
+  HOOKS_OK=0
+  echo "  ! agent-state hook not installed — oneterm will fall back to pane matching"
+fi
+
 echo "installed:"
 echo "  host   $PLIST  (launchd, KeepAlive)"
 echo "  app    $APP"
 echo "  logs   $LOG/host.log"
+[ "$HOOKS_OK" = "1" ] && echo "  hooks  ~/.claude/hooks/oneterm-agent-state.sh (SessionStart, UserPromptSubmit, Stop)"
 echo
 echo "Launch it from Spotlight (\u2318Space -> oneterm), the Dock, or Finder > Applications."
 echo "No terminal needed; the host also starts automatically at login."
