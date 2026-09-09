@@ -72,6 +72,12 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 .slist::-webkit-scrollbar-track{background:transparent}
 
 .sess{position:relative;display:flex;align-items:baseline;gap:9px;width:100%;
+  /* A flex child in a column defaults to shrinking, so past ~7 sessions the
+     rows squeezed into each other and clipped their own cwd line instead of
+     overflowing. .slist already had overflow-y:auto, but content that shrinks
+     to fit never overflows, so the scrollbar had nothing to do. Rows keep
+     their height; the list scrolls. */
+  flex:0 0 auto;
   /* These rows became <div role=button> so Space would not activate them and
      eat spaces typed into the rename field. That also dropped the button's
      default cursor, leaving an I-beam over the row and its close control. */
