@@ -1,5 +1,12 @@
 import subprocess, re, time, os, hashlib
-OUT = os.path.expanduser('~/Projects/oneterm/test/fixtures')
+# Staging dir, NOT the asserted fixture set. detect.test.mjs fails any fixture
+# with no entry in expected.json — correctly — and reload.sh gates restarts on
+# that suite. Writing straight into fixtures/ therefore turned a data-gathering
+# run into a blocked deploy, twice: once for a real new layout, once for a
+# chaos.sh shell captured mid-run that was never a valid fixture at all.
+# Review what lands here, then move it up a level and add an expectation.
+OUT = os.path.expanduser('~/Projects/oneterm/test/fixtures/incoming')
+os.makedirs(OUT, exist_ok=True)
 def sh(*a): return subprocess.run(a, capture_output=True, text=True).stdout
 seen, end = {}, time.time() + 480
 while time.time() < end:
@@ -30,4 +37,5 @@ while time.time() < end:
         open(f"{OUT}/{tag}_{h}.pane",'w').write('\n'.join(L))
         print(f"NEW {tag}", flush=True)
     time.sleep(3)
-print(f"--- collected {len(seen)} distinct layouts ---")
+print(f"--- collected {len(seen)} distinct layouts into {OUT} ---")
+print("review them, move the good ones up into test/fixtures/, and add an entry to expected.json")

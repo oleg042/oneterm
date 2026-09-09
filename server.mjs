@@ -191,7 +191,15 @@ async function annotateWaiting(list) {
       // hide a prompt: a shell can run behind a question that is blocked on you.
       if (s.working && s.cmd !== 'claude') s.waiting = false
       logState(s, s.cmd === 'claude' ? c.why : 'tail-diff', tail)
-    } catch { s.waiting = false; s.working = false }
+    } catch (e) {
+      /* Log this path too. The client still receives working=false here and can
+         chime on it, and without a line the one stray sound nobody can explain
+         is the one with no evidence. It also keeps prevState honest: skipping
+         it left the previous value in place, so the next real transition was
+         logged with the wrong "from". */
+      s.waiting = false; s.working = false
+      logState(s, 'capture failed: ' + (e?.message ?? e), '')
+    }
   }))
   // These are keyed by session name and would otherwise grow forever in a
   // process designed to run for weeks.
@@ -509,7 +517,10 @@ async function route(req, res) {
    * a stray sound can be read off rather than reasoned about. */
   if (p === '/clientlog') {
     const chunks = []; let n = 0
-    for await (const c of req) { n += c.length; if (n > 4096) break; chunks.push(c) }
+    // push THEN check: testing first meant a single chunk over the cap left
+    // chunks empty and logged a blank line. resume() drains the rest rather
+    // than abandoning the request body mid-read.
+    for await (const c of req) { chunks.push(c); n += c.length; if (n > 4096) { req.resume(); break } }
     const body = Buffer.concat(chunks).toString('utf8').slice(0, 600).replace(/\s+/g, ' ')
     console.log(`[chime] ${body}`)
     return json(res, { ok: true })
@@ -648,6 +659,25 @@ wss.on('connection', async (ws, req) => {
     apply(m)
   })
 
+  /* The close handler has to be registered BEFORE the awaits too, and for the
+   * same reason the message listener does: `close` fires exactly once, and if
+   * nothing is listening when it does, the pty is never killed. It used to be
+   * registered after the spawn, which left a window — `tmux ls` plus a pty
+   * spawn wide — where a socket that opened and closed leaked a tmux client
+   * that lived forever. Reproduced: 5 open-then-close connections left 5
+   * orphaned `tmux attach-session` processes, and one was found orphaned in
+   * the wild after 7 minutes. Ordinary use hits this, because connect() closes
+   * the previous socket on every session switch and every reconnect.
+   * Two orphan costs beyond the process itself: the session reads attached
+   * forever, and `window-size latest` lets a stale 80x24 client dictate the
+   * live pane size. */
+  let closed = false
+  ws.on('close', () => {
+    closed = true
+    try { term?.kill() } catch {}
+    console.log(`[detach] ${name}`)
+  })
+
   const sessions = await listSessions()
   if (!sessions.some(s => s.id === id)) {
     // 4404 = this session does not exist. A plain close is indistinguishable
@@ -682,11 +712,21 @@ wss.on('connection', async (ws, req) => {
   for (const m of early) apply(m)
   early.length = 0
 
+  // The other half of the race: the socket closed while we were spawning, so
+  // the handler above ran with term still null and had nothing to kill. Logged
+  // explicitly, because otherwise this reads as a [detach] that arrives BEFORE
+  // its own [attach] and looks like the log is lying.
+  if (closed) {
+    try { term.kill() } catch {}
+    console.log(`[attach] ${name} aborted before spawn — pty killed`)
+    return
+  }
+
   term.onData(d => { if (ws.readyState === 1) ws.send(d) })
   term.onExit(() => { if (ws.readyState === 1) ws.close() })
 
   // Detaching the PTY client leaves tmux — and everything in it — running.
-  ws.on('close', () => { try { term.kill() } catch {} ; console.log(`[detach] ${name}`) })
+  // (The close handler is registered above, before the awaits.)
 })
 
 server.on('error', (e) => {
@@ -715,6 +755,12 @@ process.on('unhandledRejection', (e) => {
  * session made by hand — is born UTF-8 as well. Sessions already running keep
  * the environment their processes started with; those have to be recreated. */
 async function stampServerLocale() {
+  /* Only stamp a server that already exists. set-environment would START one,
+     and this host boots at login for a user who may never open oneterm — so
+     the locale fix would have quietly added an always-on tmux process. Nothing
+     is lost by skipping: createSession stamps LANG/LC_ALL on the session
+     itself, which is the authoritative path. */
+  if (!(await tmux(['list-sessions'])).trim()) return
   await tmux(['set-environment', '-g', 'LANG', LOCALE])
   await tmux(['set-environment', '-g', 'LC_ALL', LOCALE])
 }

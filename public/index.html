@@ -566,7 +566,14 @@ function connect(id){
 }
 function scheduleRetry(){
   // Give up eventually rather than sit in a silent retry loop forever.
-  if (retry > 12){ setConn(false, 'disconnected — reload to retry'); return }
+  if (retry > 12){
+    setConn(false, 'disconnected — reload to retry')
+    /* Say so. The buffer still held the text, the status line stopped saying
+       "holding N chars", and a reload threw it away — the exact silent discard
+       the buffer exists to prevent, just moved later. */
+    dropPending(wantId, 'the connection gave up')
+    return
+  }
   retryTimer = setTimeout(() => connect(wantId), Math.min(500 * 2 ** retry++, 8000))
 }
 function setConn(on,label){ $('dot').className = 'dot'+(on?' on':''); $('conn').textContent = label }
@@ -730,8 +737,13 @@ function claimChime(key, windowMs = 4000){
    worth answering too. */
 function note(kind, s, extra){
   try {
+    // .catch matters more than the try: try only catches a SYNCHRONOUS throw,
+    // and the host being unreachable rejects the promise instead — on exactly
+    // the path that runs while reconnecting, which is when a chime is most
+    // likely to fire. Without it the diagnostic logs an uncaught rejection.
     fetch('/clientlog', { method:'POST', body: JSON.stringify(
       { kind, label: s.label, cmd: s.cmd, working: s.working, waiting: s.waiting, ...extra }) })
+      .catch(() => {})
   } catch {}
 }
 
