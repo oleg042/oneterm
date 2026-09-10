@@ -1419,6 +1419,37 @@ $('docEdit').onclick = () => {
   toast('path handed to the session — say what to change')
 }
 
+/* ── copy probe ───────────────────────────────────────────────────────────
+   Copying a table sometimes puts MOJIBAKE on the clipboard — "┌" arrives as
+   "‚îå", which is its UTF-8 bytes read as Mac Roman. Four hypotheses have been
+   tested and all four were wrong: the pane is clean, xterm's buffer is clean,
+   getSelection() is clean, the paste path is byte-perfect, and content scrolled
+   back through tmux is clean too. It is INTERMITTENT — a freshly printed table
+   copies fine.
+
+   So stop guessing and record the failure instead. This watches every real ⌘C
+   and, only when the result is actually corrupt, posts the evidence to the host
+   so it lands in host.log next to everything else. Costs nothing when things
+   work: no corruption, no report. */
+const MOJI = /\u201a\u00ee|\u2018\u00ee|\u00c3\u00ae/
+addEventListener('copy', () => {
+  // Read AFTER xterm has written into the clipboard, not before.
+  setTimeout(() => {
+    let clip = ''
+    try { clip = document.getSelection()?.toString() || '' } catch {}
+    const sel = (() => { try { return term.getSelection() } catch { return '' } })()
+    const bad = MOJI.test(sel) || MOJI.test(clip)
+    if (!bad) return
+    note('copy-mojibake', { id: active, label: '' }, {
+      selHead: sel.slice(0, 60),
+      selCodepoints: [...sel.slice(0, 6)].map(c => c.codePointAt(0).toString(16)).join(' '),
+      clipHead: clip.slice(0, 60),
+      selLen: sel.length,
+    })
+    toast('copy looked corrupted — reported to the log', 4000)
+  }, 0)
+})
+
 /* ── drag & drop / paste ──────────────────────────────────────────────────
    A browser never hands you a dropped file's real path, so the bytes go to the
    host, which writes them under ~/.oneterm/drops/<date>/ and returns the path.
