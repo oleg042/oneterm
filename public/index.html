@@ -297,6 +297,10 @@ footer .skipwarn{color:var(--warn)}
 .row .star.on{color:var(--warn)}
 .empty{padding:26px;text-align:center;color:var(--faint);font-size:12.5px}
 
+/* [hidden] is display:none in the UA sheet, and a display:flex rule on the
+   same element silently outranks it — so `el.hidden = true` looked ignored
+   and the skills All/Favourites tabs showed in every palette mode. */
+.opts[hidden]{display:none}
 .opts{display:flex;align-items:center;gap:16px;padding:12px 18px;
   border-bottom:1px solid var(--line);flex-wrap:wrap}
 .seg{display:inline-flex;gap:2px;background:var(--raise);border-radius:var(--r);padding:2px}
@@ -326,6 +330,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
     <button class="railbtn" id="newBtn"><i class="g">+</i><span>New session</span><span class="k">&#8984;E</span></button>
     <button class="railbtn" id="paletteBtn"><i class="g">&#8801;</i><span>Search</span><span class="k">&#8984;K</span></button>
     <button class="railbtn" id="skillsBtn"><i class="g">&#9671;</i><span>Skills</span><span class="k" id="skillCount">&#8984;J</span></button>
+      <button class="railbtn" id="resumeBtn"><i class="g">&#8635;</i><span>Resume session</span><span class="k">&#8679;&#8984;R</span></button>
     <div class="iconrow">
       <button class="ico" id="themeBtn" title="Light / dark">&#9680;</button>
       <button class="ico" id="soundBtn" title="Sound">&#9834;</button>
@@ -376,11 +381,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
     </div>
     <div class="qwrap"><input class="q" id="pq" placeholder="Skills, projects, sessions&hellip;" autocomplete="off" spellcheck="false"/></div>
     <div class="rows" id="plist"></div>
-    <div class="hintline">
-      <span><kbd>&#8593;&#8595;</kbd> move</span><span><kbd>&#8629;</kbd> insert</span>
-      <span><kbd>&#9636;</kbd> or <kbd>&#8594;</kbd> read</span><span><kbd>&#9734;</kbd> favourite</span>
-      <span><kbd>esc</kbd> close</span>
-    </div>
+    <div class="hintline" id="phints"></div>
   </div>
 </div>
 
@@ -475,7 +476,12 @@ document.fonts.ready.then(async () => {
 
 let sessions = [], active = localStorage.getItem('oneterm-active'), ws = null
 let retry = 0, retryTimer = null, wantId = null
-let skills = [], projects = []
+let skills = [], projects = [], conversations = []
+/* Past Claude Code conversations from EVERY folder. Its own /resume is
+   scoped to the directory you launched in, so resuming something from
+   another project means knowing which folder it lived in and going there
+   first. Each transcript states its own cwd, so oneterm can open the
+   session in the right place for you. */
 const activity = new Map()
 const api  = p => fetch(p).then(r => r.json()).catch(() => null)
 // State-changing calls must not be GETs: a GET is reachable from an <img> tag
@@ -928,9 +934,9 @@ function paintRail(){
       '<i class="d ' + cls + '"></i><span class="txt">' +
       '<span class="t"><span class="nm">' + esc(s.label) + '</span>' +
       '<i class="tag">' + (s.cmd === 'claude' ? 'cc' : 'sh') + '</i>' +
-      (st === 'wait'  ? '<i class="need">needs you</i>' : '') +
-      (st === 'busy'  ? '<i class="need work">working</i>' : '') +
-      (st === 'done'  ? '<i class="need fin">done</i>' : '') +
+      /* No word for the state: the dot already says it, in colour and in
+         motion, and repeating it in text stole the room the session NAME
+         needed — which is the one thing the dot cannot tell you. */
       (s.skip ? '<i class="warn">!</i>' : '') +
       '</span><span class="p">' + esc(tilde(s.cwd)) + '</span></span>'
     el.onclick = () => switchTo(s.id)
@@ -1007,9 +1013,10 @@ async function switchTo(id){
   const a = activity.get(id); if (a){ a.doneUnseen = false; a.notified = false }
   paintRail(); connect(id)
 }
-async function newSession(cmd, cwd, skip){
+async function newSession(cmd, cwd, skip, resume){
   const r = await post('/new?cmd=' + cmd + '&cwd=' + encodeURIComponent(cwd || '') +
-    '&skip=' + (skip ? 1 : 0) + '&cols=' + term.cols + '&rows=' + term.rows)
+    '&skip=' + (skip ? 1 : 0) + '&cols=' + term.cols + '&rows=' + term.rows +
+    (resume ? '&resume=' + encodeURIComponent(resume) : ''))
   if (!r?.id){ toast(r?.error === 'no_such_directory' ? 'no such directory: ' + (r.cwd||'') : "couldn't start that session"); return }
   hideOverlay(); await refresh()
   active = r.id; localStorage.setItem('oneterm-active', r.id); paintRail(); connect(r.id)
@@ -1049,9 +1056,23 @@ function showSheet(which, mode = 'all'){
   }
   const inp = which === 'palette' ? $('pq') : $('nq')
   inp.value = ''
-  inp.placeholder = paletteMode === 'skill'
-    ? 'Skills and slash commands…' : 'Skills, projects, sessions…'
+  inp.placeholder = paletteMode === 'skill' ? 'Skills and slash commands…'
+    : paletteMode === 'resume' ? 'Resume a conversation, any folder…'
+    : 'Skills, projects, sessions…'
   $('skillTabs').hidden = !(which === 'palette' && paletteMode === 'skill')
+  /* The hints must match the mode. Offering "favourite" and "read" while
+     listing past conversations describes a different screen than the one you
+     are actually looking at. */
+  const HM = '<span><kbd>&#8593;&#8595;</kbd> move</span>'
+  const HC = '<span><kbd>esc</kbd> close</span>'
+  if ($('phints')) $('phints').innerHTML =
+    paletteMode === 'skill'
+      ? HM + '<span><kbd>&#8629;</kbd> insert</span>'
+           + '<span><kbd>&#9636;</kbd> or <kbd>&#8594;</kbd> read</span>'
+           + '<span><kbd>&#9734;</kbd> favourite</span>' + HC
+    : paletteMode === 'resume'
+      ? HM + '<span><kbd>&#8629;</kbd> resume in a new session</span>' + HC
+      : HM + '<span><kbd>&#8629;</kbd> open</span>' + HC
   for (const o of $('skillseg').children) o.setAttribute('aria-pressed', String(o.dataset.tab === skillTab))
   inp.focus(); render()
 }
@@ -1060,8 +1081,24 @@ function closeSheet(){
   $(openSheet === 'palette' ? 'palette' : 'newsheet').classList.remove('open')
   openSheet = null; term.focus()
 }
+/** "3m", "2h", "4d" — a picker needs age at a glance, not a timestamp. */
+function ago(ms){
+  const m = Math.max(0, Math.round((Date.now() - ms) / 60000))
+  if (m < 60) return m + 'm'
+  if (m < 60 * 24) return Math.round(m / 60) + 'h'
+  return Math.round(m / 1440) + 'd'
+}
 function paletteItems(){
   const out = []
+  /* Every conversation on the machine, newest first, whatever folder it was
+     in. Picking one opens a NEW oneterm session in that conversation's own
+     cwd and hands `claude --resume` its id. */
+  if (paletteMode === 'resume'){
+    return conversations.map(c => ({
+      kind: ago(c.at), t: c.title, s: tilde(c.cwd),
+      run: () => newSession('claude', c.cwd, false, c.id),
+    }))
+  }
   // "Skills" opens the same sheet scoped to skills, so you can browse the list
   // without knowing a name — the whole point of asking for a dropdown.
   if (paletteMode === 'skill'){
@@ -1223,6 +1260,11 @@ addEventListener('keydown', e => {
   if (meta && e.key.toLowerCase() === 'j'){ e.preventDefault()
     if (openSheet === 'palette' && paletteMode === 'skill') closeSheet()
     else { closeSheet(); showSheet('palette', 'skill') }; return }
+  /* Shift too: plain ⌘R is the browser's reload, and in a page you reload as
+     often as this one, taking it away costs more than the shortcut is worth. */
+  if (meta && e.shiftKey && e.key.toLowerCase() === 'r'){ e.preventDefault()
+    if (openSheet === 'palette' && paletteMode === 'resume') closeSheet()
+    else { closeSheet(); showSheet('palette', 'resume') }; return }
   if (meta && /^[1-9]$/.test(e.key)){
     const t = sessions[Number(e.key) - 1]
     if (t){ e.preventDefault(); closeSheet(); switchTo(t.id) }
@@ -1259,6 +1301,7 @@ paintSound()
 $('newBtn').onclick = () => showSheet('new')
 $('paletteBtn').onclick = () => showSheet('palette')
 $('skillsBtn').onclick   = () => showSheet('palette', 'skill')
+$('resumeBtn').onclick   = () => showSheet('palette', 'resume')
 for (const b of $('skillseg').children) b.onclick = () => {
   skillTab = b.dataset.tab; sel = 0
   for (const o of $('skillseg').children) o.setAttribute('aria-pressed', String(o === b))
@@ -1455,8 +1498,8 @@ function firstRun(){
 }
 ;(async () => {
   sendResize()
-  const [sk, pr] = await Promise.all([api('/skills'), api('/projects')])
-  skills = sk ?? []; projects = pr ?? []
+  const [sk, pr, cv] = await Promise.all([api('/skills'), api('/projects'), api('/conversations')])
+  skills = sk ?? []; projects = pr ?? []; conversations = cv ?? []
   $('skillCount').textContent = skills.length + ' ⌘J'
   await refresh()
   if (!sessions.length) firstRun()

@@ -15,10 +15,10 @@
  * can disagree with reality. `tmux ls` IS the list.
  */
 import { createServer } from 'node:http'
-import { readFile, writeFile, mkdir, access, realpath, stat, rename } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, access, realpath, stat, rename, readdir, open } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, basename } from 'node:path'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { WebSocketServer } from 'ws'
@@ -332,11 +332,84 @@ async function annotateWaiting(list) {
   return list
 }
 
-async function createSession({ id, cmd, cwd, cols, rows, skip }) {
+/* ── past conversations, across every folder ──────────────────────────────
+ * Claude Code keeps one JSONL per conversation under ~/.claude/projects/<dir>.
+ * Its own /resume picker is scoped to the folder you launched in, so resuming
+ * something from another project means knowing which folder it was and going
+ * there first. Everything needed to skip that is already in the file.
+ *
+ * The cwd is read FROM THE TRANSCRIPT, never decoded from the directory name:
+ * that name is the path with slashes turned into dashes, and a folder whose
+ * own name contains a dash — skanai-dispatch — is then impossible to decode
+ * unambiguously. The file states its cwd; use it. */
+const CLAUDE_PROJECTS = join(process.env.HOME, '.claude', 'projects')
+const CONV_LIMIT = 80          // a picker, not an archive
+const CONV_HEAD  = 64 * 1024   // metadata lives in the first few lines
+let convCache = { at: 0, data: null }
+
+/** Pull {id, cwd, title, at} out of one transcript without reading all of it. */
+async function readConversation(path, mtime) {
+  let fh
+  try {
+    fh = await open(path, 'r')
+    const { buffer, bytesRead } = await fh.read(Buffer.alloc(CONV_HEAD), 0, CONV_HEAD, 0)
+    const head = buffer.subarray(0, bytesRead).toString('utf8')
+    let cwd = null, title = null, id = null, firstUser = null
+    // The last line of a bounded read is usually truncated — drop it.
+    const lines = head.split('\n'); lines.pop()
+    for (const line of lines) {
+      let d; try { d = JSON.parse(line) } catch { continue }
+      id    ??= d.sessionId
+      cwd   ??= d.cwd
+      title ??= d.customTitle
+      if (!firstUser && d.type === 'user') {
+        const c = d.message?.content
+        const t = typeof c === 'string' ? c
+                : Array.isArray(c) ? c.filter(x => x?.type === 'text').map(x => x.text).join(' ')
+                : ''
+        if (t.trim()) firstUser = t.trim().replace(/\s+/g, ' ').slice(0, 120)
+      }
+      if (id && cwd && title && firstUser) break
+    }
+    if (!id || !cwd) return null          // cannot resume what we cannot place
+    return { id, cwd, title: title || firstUser || basename(cwd), preview: firstUser || '', at: mtime }
+  } catch { return null }
+  finally { await fh?.close().catch(() => {}) }
+}
+
+async function readConversations() {
+  if (Date.now() - convCache.at < 15_000 && convCache.data) return convCache.data
+  const found = []
+  try {
+    for (const dir of await readdir(CLAUDE_PROJECTS)) {
+      const full = join(CLAUDE_PROJECTS, dir)
+      let names; try { names = await readdir(full) } catch { continue }
+      for (const n of names) {
+        if (!n.endsWith('.jsonl')) continue
+        try { found.push({ path: join(full, n), mtime: (await stat(join(full, n))).mtimeMs }) } catch {}
+      }
+    }
+  } catch { /* no ~/.claude/projects — nothing to resume */ }
+  // Newest first, and only open the ones a picker will actually show: reading
+  // the head of 119 files on every keystroke is not free.
+  found.sort((a, b) => b.mtime - a.mtime)
+  const data = (await Promise.all(
+    found.slice(0, CONV_LIMIT).map(f => readConversation(f.path, f.mtime))
+  )).filter(Boolean)
+  convCache = { at: Date.now(), data }
+  return data
+}
+
+async function createSession({ id, cmd, cwd, cols, rows, skip, resume }) {
   const name = PREFIX + id
-  const inner = cmd === 'claude'
-    ? (skip ? 'claude --dangerously-skip-permissions' : 'claude')
-    : `exec ${SHELL} -l`
+  /* A resumed conversation is still a claude session; it just starts with
+     --resume <id>. The id comes from the transcript's own sessionId, and the
+     session is created with that conversation's cwd, so the agent wakes up
+     where it left off rather than wherever the picker was opened from. */
+  const claudeCmd = 'claude'
+    + (skip ? ' --dangerously-skip-permissions' : '')
+    + (resume ? ` --resume ${resume}` : '')
+  const inner = cmd === 'claude' ? claudeCmd : `exec ${SHELL} -l`
   // -d: create detached, so creation never depends on a client being ready.
   // -e: the inner shell inherits the HOST's environment, not the attach
   //     client's — so ONETERM_* set at attach time never reached the shell.
@@ -634,6 +707,7 @@ async function route(req, res) {
   if (p === '/sessions') return json(res, await sessionsCached())
   if (p === '/skills')   return json(res, await skillIndex())
   if (p === '/projects') return json(res, await readProjects())
+  if (p === '/conversations') return json(res, await readConversations())
 
   if (MUTATIONS.has(p)) sessionCache = { at: 0, data: null }
   /* Drag-and-drop parity with a native terminal. A browser never exposes a
@@ -750,9 +824,17 @@ async function route(req, res) {
       res.writeHead(400, {'content-type':'application/json'})
       return res.end(JSON.stringify({ error: 'no_such_directory', cwd: wantCwd }))
     }
+    /* A conversation id reaches the command line, so it is validated to the
+       shape Claude Code actually mints and nothing looser. Anything else here
+       would be shell injection with extra steps. */
+    const resume = q.get('resume')
+    if (resume && !/^[0-9a-fA-F-]{8,64}$/.test(resume)) {
+      res.writeHead(400, {'content-type':'application/json'})
+      return res.end(JSON.stringify({ error: 'bad_resume_id' }))
+    }
     await createSession({ id, cmd: q.get('cmd') || 'shell',
       cwd: q.get('cwd') || HOME, cols: Number(q.get('cols')), rows: Number(q.get('rows')),
-      skip: q.get('skip') === '1' })
+      skip: q.get('skip') === '1', resume })
     return json(res, { id })
   }
 
