@@ -328,7 +328,6 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
   <div class="slist" id="slist"></div>
   <div class="railfoot">
     <button class="railbtn" id="newBtn"><i class="g">+</i><span>New session</span><span class="k">&#8984;E</span></button>
-    <button class="railbtn" id="paletteBtn"><i class="g">&#8801;</i><span>Search</span><span class="k">&#8984;K</span></button>
     <button class="railbtn" id="skillsBtn"><i class="g">&#9671;</i><span>Skills</span><span class="k" id="skillCount">&#8984;J</span></button>
       <button class="railbtn" id="resumeBtn"><i class="g">&#8635;</i><span>Resume session</span><span class="k">&#8679;&#8984;R</span></button>
     <div class="iconrow">
@@ -1044,7 +1043,7 @@ function toggleFav(name){
   saveFavs(); render()
 }
 const skipOn = () => $('skipbox').checked
-function showSheet(which, mode = 'all'){
+function showSheet(which, mode = 'skill'){
   openSheet = which; sel = 0; paletteMode = mode; skillTab = 'all'
   $(which === 'palette' ? 'palette' : 'newsheet').classList.add('open')
   if (which === 'new'){
@@ -1056,9 +1055,8 @@ function showSheet(which, mode = 'all'){
   }
   const inp = which === 'palette' ? $('pq') : $('nq')
   inp.value = ''
-  inp.placeholder = paletteMode === 'skill' ? 'Skills and slash commands…'
-    : paletteMode === 'resume' ? 'Resume a conversation, any folder…'
-    : 'Skills, projects, sessions…'
+  inp.placeholder = paletteMode === 'resume'
+    ? 'Resume a conversation, any folder…' : 'Skills and slash commands…'
   $('skillTabs').hidden = !(which === 'palette' && paletteMode === 'skill')
   /* The hints must match the mode. Offering "favourite" and "read" while
      listing past conversations describes a different screen than the one you
@@ -1066,13 +1064,11 @@ function showSheet(which, mode = 'all'){
   const HM = '<span><kbd>&#8593;&#8595;</kbd> move</span>'
   const HC = '<span><kbd>esc</kbd> close</span>'
   if ($('phints')) $('phints').innerHTML =
-    paletteMode === 'skill'
-      ? HM + '<span><kbd>&#8629;</kbd> insert</span>'
+    paletteMode === 'resume'
+      ? HM + '<span><kbd>&#8629;</kbd> resume in a new session</span>' + HC
+      : HM + '<span><kbd>&#8629;</kbd> insert</span>'
            + '<span><kbd>&#9636;</kbd> or <kbd>&#8594;</kbd> read</span>'
            + '<span><kbd>&#9734;</kbd> favourite</span>' + HC
-    : paletteMode === 'resume'
-      ? HM + '<span><kbd>&#8629;</kbd> resume in a new session</span>' + HC
-      : HM + '<span><kbd>&#8629;</kbd> open</span>' + HC
   for (const o of $('skillseg').children) o.setAttribute('aria-pressed', String(o.dataset.tab === skillTab))
   inp.focus(); render()
 }
@@ -1132,17 +1128,12 @@ function paletteItems(){
         }
       })
   }
-  for (const s of sessions) if (s.id !== active)
-    out.push({kind:'session', t:s.label, s:tilde(s.cwd), run:() => switchTo(s.id)})
-  for (const s2 of sessions)
-    out.push({kind:'rename', t:'Rename ' + s2.label, s:tilde(s2.cwd), run:() => {
-      const row = [...$('slist').children].find(n => n.dataset.id === s2.id)
-      if (row) startRename(row, s2)
-    }})
-  for (const p of projects)
-    out.push({kind:'open', t:p.name, s:tilde(p.path), run:() => newSession('claude', p.path, false)})
-  for (const k of skills)
-    out.push({kind:'skill', t:'/' + k.name, s:k.desc, run:() => typeIn('/' + k.name + ' ')})
+  /* A third, catch-all mode used to live here: one list holding every session,
+     rename, project and skill. It reached 223 rows, of which 208 were already
+     one keystroke away elsewhere — 164 skills (⌘J), 44 projects (⌘E), and
+     renames that every row's tooltip AND the status bar already offer on a
+     double-click. Searching it for a session meant filtering a haystack that
+     was three-quarters skills. Each menu means exactly one thing now. */
   return out
 }
 function newItems(){
@@ -1253,8 +1244,6 @@ for (const el of [$('palette'), $('newsheet')])
 
 addEventListener('keydown', e => {
   const meta = e.metaKey || e.ctrlKey
-  if (meta && e.key.toLowerCase() === 'k'){ e.preventDefault()
-    if (openSheet === 'palette') closeSheet(); else { closeSheet(); showSheet('palette') }; return }
   if (meta && e.key.toLowerCase() === 'e'){ e.preventDefault()
     if (openSheet === 'new') closeSheet(); else { closeSheet(); showSheet('new') }; return }
   if (meta && e.key.toLowerCase() === 'j'){ e.preventDefault()
@@ -1299,7 +1288,6 @@ $('soundBtn').onclick = () => {
 paintSound()
 
 $('newBtn').onclick = () => showSheet('new')
-$('paletteBtn').onclick = () => showSheet('palette')
 $('skillsBtn').onclick   = () => showSheet('palette', 'skill')
 $('resumeBtn').onclick   = () => showSheet('palette', 'resume')
 for (const b of $('skillseg').children) b.onclick = () => {
