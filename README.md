@@ -1,5 +1,7 @@
 # oneterm
 
+[![tests](https://github.com/oleg042/oneterm/actions/workflows/tests.yml/badge.svg)](https://github.com/oleg042/oneterm/actions/workflows/tests.yml)
+
 Your terminal, in a Chrome tab. Built for running several Claude Code sessions
 without losing track of them.
 

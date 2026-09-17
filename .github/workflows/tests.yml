@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # tmux is not needed by these suites — they run against captured panes
+      # and throwaway ~/.claude directories — but node-pty is a native module
+      # with no prebuilt Linux binary, so install has to be able to compile it.
+      - run: npm ci --ignore-scripts || npm install --ignore-scripts
+
+      - name: pane detection (real captured panes)
+        run: node test/detect.test.mjs
+
+      - name: hook / pane state machine
+        run: node test/agentstate.test.mjs
+
+      - name: settings.json merging
+        run: CLAUDE_HOME="$RUNNER_TEMP/claude" node test/install-hooks.test.mjs
+
+      - name: agent-state hook script
+        run: bash test/hook-script.test.sh
+
+      - name: status line wrapper
+        run: bash test/statusline.test.sh
+
+      # e2e-hook.sh is deliberately absent: it needs a running host, tmux and a
+      # real Claude Code turn, so it stays a local-only check.
