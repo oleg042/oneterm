@@ -960,7 +960,7 @@ async function refresh(){
                                             (activity.get(s.id)||{}).doneUnseen]))
   const changed = sig !== lastSig; lastSig = sig
   sessions = list
-  if (!sessions.some(s => s.id === active)) active = sessions[0]?.id ?? null
+  if (!sessions.some(s => s.id === active)) { active = sessions[0]?.id ?? null; if (active) writeHash(active) }
   // a 4s poll that repaints unconditionally restarts the pulse too
   if (changed) paintRail(); else paintTitle()
   // Unconditional: the reset CLOCK moves even when no session state does, and
@@ -1132,9 +1132,31 @@ function startRename(el, s){
     if (e.key === 'Escape'){ e.preventDefault(); restore() }
   }
 }
+/* The URL names the session you are looking at, so a tab has a direct link:
+   #<id> and you land on exactly that session.
+
+   By ID ONLY. Labels were tempting — they are what you actually remember — but
+   nothing stops two sessions sharing one, and a link that quietly resolves to
+   whichever happens to sit higher in the rail is worse than a link that does
+   not resolve at all. The app always writes the id, so anything copied out of
+   the address bar is unambiguous by construction. */
+function sessionFromHash(){
+  const want = decodeURIComponent(location.hash.replace(/^#/, '')).trim()
+  if (!want) return null
+  return sessions.find(s => s.id === want)?.id ?? null
+}
+/* replaceState, not location.hash: assigning the hash pushes a history entry,
+   and after a morning of clicking between sessions the back button becomes a
+   tour of every tab you visited instead of leaving the app. */
+function writeHash(id){
+  const s = sessions.find(x => x.id === id)
+  if (!s) return
+  history.replaceState(null, '', '#' + encodeURIComponent(s.id))
+}
+
 async function switchTo(id){
   if (id === active){ term.focus(); return }
-  active = id; localStorage.setItem('oneterm-active', id)
+  active = id; localStorage.setItem('oneterm-active', id); writeHash(id)
   const a = activity.get(id); if (a){ a.doneUnseen = false; a.notified = false }
   paintRail(); connect(id)
 }
@@ -1144,7 +1166,8 @@ async function newSession(cmd, cwd, skip, resume){
     (resume ? '&resume=' + encodeURIComponent(resume) : ''))
   if (!r?.id){ toast(r?.error === 'no_such_directory' ? 'no such directory: ' + (r.cwd||'') : "couldn't start that session"); return }
   hideOverlay(); await refresh()
-  active = r.id; localStorage.setItem('oneterm-active', r.id); paintRail(); connect(r.id)
+  active = r.id; localStorage.setItem('oneterm-active', r.id); writeHash(r.id)
+  paintRail(); connect(r.id)
 }
 async function killSession(id){
   const wasAttached = id === wantId
@@ -1721,9 +1744,18 @@ function firstRun(){
   if (!sessions.length) firstRun()
   else {
     hideOverlay()
-    active = active ?? sessions[0].id
-    localStorage.setItem('oneterm-active', active)
+    /* A link beats the remembered session: if someone opened this URL to get
+       to a specific tab, that is a deliberate instruction and localStorage is
+       just the last thing they happened to be looking at. */
+    active = sessionFromHash() ?? (sessions.some(s => s.id === active) ? active : null)
+             ?? sessions[0].id
+    localStorage.setItem('oneterm-active', active); writeHash(active)
     paintRail(); connect(active)     // not switchTo(): its same-id guard would bail
+    // Editing the URL, or a back/forward that crosses a hash, should move too.
+    addEventListener('hashchange', () => {
+      const id = sessionFromHash()
+      if (id && id !== active) switchTo(id)
+    })
   }
   if (window.Notification?.permission === 'default') Notification.requestPermission()
   setInterval(refresh, 1500)
