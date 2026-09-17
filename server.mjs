@@ -63,16 +63,15 @@ async function listSessions() {
   const fmt = ['#{session_name}', '#{session_created}', '#{session_attached}',
                '#{@oneterm_label}', '#{@oneterm_cwd}', '#{@oneterm_cmd}',
                '#{@oneterm_skip}', '#{@oneterm_order}',
-               '#{pane_current_path}', '#{pane_current_command}'].join(D)
+               '#{pane_current_path}'].join(D)
   const out = await tmux(['list-sessions', '-F', fmt])
-  const FIELDS = 10
+  const FIELDS = 9
   return out.split('\n').filter(l => l.startsWith(PREFIX)).map(line => {
     const parts = line.split(D)
     // A row with the wrong field count means something injected the delimiter.
     // Drop it rather than render shifted fields as if they were real.
     if (parts.length !== FIELDS) { console.warn('[skip malformed row]', parts[0]); return null }
-    const [name, created, attached, label, cwd, cmd, skip, order,
-           livePath, liveCmd] = parts
+    const [name, created, attached, label, cwd, cmd, skip, order, livePath] = parts
     return { id: name.slice(PREFIX.length), name,
              created: Number(created) * 1000, attached: attached !== '0',
              label: label || name, cmd: cmd || 'shell',
@@ -81,9 +80,7 @@ async function listSessions() {
              // THE path. A login shell can cd away from tmux's -c, so the
              // requested cwd is a wish and pane_current_path is the fact.
              // Showing the wish is how `rm -rf build/` hits the wrong tree.
-             cwd: livePath || cwd || '',
-             requested: cwd || '',
-             running: liveCmd || '' }
+             cwd: livePath || cwd || '' }
   }).filter(Boolean).sort((a, b) => {
     // explicit drag order first; anything never dragged falls back to age
     const ao = a.order, bo = b.order
@@ -869,13 +866,6 @@ async function route(req, res) {
   if (p === '/conversations') return json(res, await readConversations())
 
   if (MUTATIONS.has(p)) sessionCache = { at: 0, data: null }
-  /* Drag-and-drop parity with a native terminal. A browser never exposes a
-   * dropped file's real path — by design — so the bytes come to us, we write
-   * them somewhere stable, and the client types THAT path into the session.
-   * Same end result: you drop a screenshot, the agent gets a path it can read. */
-  /* The chime decision is made in the browser; the state flip that caused it is
-   * made here. Posting the decision back puts both in ONE log on ONE clock, so
-   * a stray sound can be read off rather than reasoned about. */
   /* Claude Code's own lifecycle events, relayed by hooks/oneterm-agent-state.sh.
    * Already behind the same guard as every mutation: POST only, Host and Origin
    * allowlisted, so a random page cannot forge a session's state. */
@@ -920,6 +910,9 @@ async function route(req, res) {
     return json(res, { ok: true })
   }
 
+  /* The chime decision is made in the browser; the state flip that caused it is
+   * made here. Posting the decision back puts both in ONE log on ONE clock, so
+   * a stray sound can be read off rather than reasoned about. */
   if (p === '/clientlog') {
     const chunks = []; let n = 0
     // push THEN check: testing first meant a single chunk over the cap left
@@ -931,6 +924,10 @@ async function route(req, res) {
     return json(res, { ok: true })
   }
 
+  /* Drag-and-drop parity with a native terminal. A browser never exposes a
+   * dropped file's real path — by design — so the bytes come to us, we write
+   * them somewhere stable, and the client types THAT path into the session.
+   * Same end result: you drop a screenshot, the agent gets a path it can read. */
   if (p === '/drop') {
     const raw  = (url.searchParams.get('name') || 'file').split(/[\\/]/).pop()
     const safe = (raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'file').slice(0, 120)
