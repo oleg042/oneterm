@@ -691,6 +691,23 @@ term.onData(d => {
       ws.send(JSON.stringify({t:'in', d: WHEEL_REPORT.test(d) ? d + d : d}))
     return
   }
+  /* ctrl-Z in a Claude session is a trap here, so it becomes ctrl-_ (undo).
+
+     Claude Code recently changed ctrl-Z from "undo input" to "suspend", with a
+     note that ctrl-_ now undoes. In a normal terminal that is recoverable: your
+     interactive shell gets control and `fg` resumes the job. In oneterm the
+     parent is a non-interactive wrapper shell with NO job control, so a
+     suspended Claude can never be resumed — `fg` just echoes into a pane that
+     nothing is reading, and the session is dead until you kill it. Observed
+     exactly that: three `fg`s typed into a void.
+
+     Suspend has no meaning in this environment anyway, so the keystroke is
+     spent on what the hand almost certainly wanted. Only for Claude sessions:
+     a shell here IS interactive and its ctrl-Z works. */
+  if (d === '\x1a' && sessions.find(s => s.id === active)?.cmd === 'claude'){
+    sendIn('\x1f')
+    return
+  }
   sendIn(d)
 })
 
