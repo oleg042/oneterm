@@ -15,7 +15,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { classify, liveTail, LIVE_LINES } from '../detect.mjs'
+import { classify, liveTail, LIVE_LINES, paneWindow } from '../detect.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const expected = JSON.parse(readFileSync(join(HERE, 'expected.json'), 'utf8'))
@@ -33,7 +33,7 @@ for (const f of files) {
   const exp = expected[f]
   if (!exp) { bad(`${f}: no expectation recorded — add one to expected.json`); continue }
   // exactly what server.mjs feeds it
-  const tail = readFileSync(join(dir, f), 'utf8').replace(/\s+$/, '').slice(-2000)
+  const tail = paneWindow(readFileSync(join(dir, f), 'utf8'))
   const got = classify(tail, 'claude')
   const diff = ['working', 'fg', 'bg', 'waiting'].filter(k => got[k] !== exp[k])
   if (diff.length)

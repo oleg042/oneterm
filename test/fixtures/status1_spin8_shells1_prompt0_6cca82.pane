@@ -20,7 +20,7 @@
   build, so prod is still running the broken bundle. Fixing the syntax now and updating the chain to halt on build errors. · summarized
 
 ⏺ Fixing the JSX comment, building with a hard failure, typechecking, committing, pushing, waiting for the deploy
-  ⎿  $ cd /Users/olegdeduchenko/Projects/oneawaybuild; python3 - <<'PYEOF'
+  ⎿  $ cd /Users/dev/Projects/oneawaybuild; python3 - <<'PYEOF'
      import pathlib
      D = pathlib.Path('apps/web/src/ui/components/ColumnDrawer.tsx'); d = D.read_text()
      old = """ fieldId={edit?.id} tableId={tableId}
@@ -33,5 +33,5 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── oneawaybuild ─
 ❯ 
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  /Users/olegdeduchenko/Projects/oneawaybuild | Fable 5.1 | ███████░░░ 76%                                                                    /rc
+  /Users/dev/Projects/oneawaybuild | Fable 5.1 | ███████░░░ 76%                                                                    /rc
   ⏵⏵ auto mode on · 1 shell · ← 7 agents · 1 feedback draft

@@ -129,6 +129,49 @@ console.log('\n7. a backup is taken before the first change')
     ? ok('backup matches the pre-install file exactly') : bad('backup does not match')
 }
 
+console.log('\n8. the status line is WRAPPED, never taken')
+{
+  const MINE = '~/.claude/statusline.sh'
+  const home = fakeHome(JSON.stringify({ statusLine: { type: 'command', command: MINE } }, null, 2))
+  run(home)
+  const after = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8'))
+  after.statusLine.command.includes('oneterm-statusline')
+    ? ok('settings.json now points at our wrapper') : bad('wrapper not installed')
+  readFileSync(join(home, 'oneterm-statusline.inner'), 'utf8').trim() === MINE
+    ? ok('the previous command is parked for the wrapper to run')
+    : bad('the user\'s own status line was lost')
+
+  /* THE FOOTGUN: on a re-run the setting already points at us. Re-parking it
+     would have the wrapper invoke itself — infinite recursion, on every
+     render, on every session on the machine. */
+  run(home)
+  readFileSync(join(home, 'oneterm-statusline.inner'), 'utf8').trim() === MINE
+    ? ok('re-running does NOT park our own wrapper as the inner command')
+    : bad('RECURSION: the wrapper now calls itself')
+
+  run(home, '--uninstall')
+  const back = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8'))
+  back.statusLine?.command === MINE
+    ? ok('uninstall restores the original status line') : bad(`uninstall left ${JSON.stringify(back.statusLine)}`)
+  !existsSync(join(home, 'oneterm-statusline.inner'))
+    ? ok('and clears the parked copy') : bad('parked copy survived uninstall')
+}
+
+console.log('\n9. …including on a machine that never had one')
+{
+  const home = fakeHome(undefined)
+  run(home)
+  const after = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8'))
+  after.statusLine.command.includes('oneterm-statusline')
+    ? ok('installs cleanly with no prior status line') : bad('no statusLine written')
+  readFileSync(join(home, 'oneterm-statusline.inner'), 'utf8').trim() === ''
+    ? ok('parks an empty inner command') : bad('invented an inner command')
+  run(home, '--uninstall')
+  const back = JSON.parse(readFileSync(join(home, 'settings.json'), 'utf8'))
+  back.statusLine === undefined
+    ? ok('uninstall leaves no statusLine behind') : bad('left a dangling statusLine')
+}
+
 for (const h of homes) rmSync(h, { recursive: true, force: true })
 console.log(`\n─────────────────────────────\n  ${pass} passed, ${fail} failed`)
 console.log(fail ? '  installer is UNSAFE — do not ship\n' : '  installer is safe on every machine shape tested.\n')

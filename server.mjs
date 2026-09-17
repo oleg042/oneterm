@@ -25,7 +25,7 @@ import { WebSocketServer } from 'ws'
 import pty from 'node-pty'
 // Detection lives in its own module so test/detect.test.mjs runs the patterns
 // that actually ship, against panes captured from live sessions.
-import { classify, liveTail, LIVE_LINES } from './detect.mjs'
+import { classify, liveTail, LIVE_LINES, paneWindow } from './detect.mjs'
 // Same reason as detect.mjs: the tests must run the decision that ships, not a
 // copy of it. This one has been wrong twice, so it is the last place to allow
 // a second implementation to drift.
@@ -106,7 +106,22 @@ async function paneTail(name) {
    * awaiting an answer now. Reading history meant a marker from an old, long
    * finished turn kept a session pinned to "working". */
   const out = await tmux(['capture-pane', '-p', '-t', name])
-  return out.replace(/\s+$/, '').slice(-2000)
+  /* Keep LINES, not bytes.
+   *
+   * This used to be .slice(-2000), which is about 25 lines at 80 columns but
+   * only ten at 191 — so on a wide pane the window silently shrank below
+   * LIVE_LINES and the detector never saw the bottom of the screen it was
+   * supposed to be reading. A session ran visibly for six minutes showing an
+   * idle dot because its spinner sat 2,506 characters from the end.
+   *
+   * It defeated the hook too, which is why it took so long to spot: the hook
+   * correctly reported working=true, the truncated pane disagreed for longer
+   * than MISSED_STOP_MS, and the missed-Stop fallback concluded the hook was
+   * the stale one. One cap, both layers.
+   *
+   * The byte ceiling stays as a bound on pathological widths, but it is now
+   * far enough above any real terminal that it cannot trim a line count. */
+  return paneWindow(out)
 }
 /* A run is detected by sampling an ANIMATING pane, so a single miss is a
  * blink, not an ending. Keep "working" latched for a few seconds after the last
@@ -232,10 +247,20 @@ function saveHookState() {
 }
 /* start -> a turn began · stop -> it ended · session -> just the id linkage.
  * SubagentStop never reaches here: the hook drops anything carrying agent_id. */
-function applyAgentEvent({ id, action, claudeSession, transcript }) {
+function applyAgentEvent({ id, action, claudeSession, transcript, model, ctxPct, ctxSize, limits }) {
   if (!id) return false
-  const entry = applyEvent(hookState.get(id), { action, claudeSession, transcript })
+  const entry = applyEvent(hookState.get(id),
+                           { action, claudeSession, transcript, model, ctxPct, ctxSize, limits })
   hookState.set(id, entry)
+
+  /* A status report is not a turn boundary and must not be treated as one.
+     Clearing hookQuiet here would be a real bug rather than a cosmetic one:
+     that timestamp is how decideWorking eventually gives up on a Stop that
+     was lost while the host was restarting, and the status line re-renders
+     often enough to reset it forever — pinning the session working for good.
+     It is also far too frequent to log. */
+  if (action === 'status') { saveHookState(); return true }
+
   /* A stop CLEARS the latch. That is what the event buys us: the pane's own
      verdict becomes authoritative immediately instead of 12 seconds later.
      If a turn is genuinely still running the next poll re-arms it. */
@@ -254,6 +279,42 @@ function applyAgentEvent({ id, action, claudeSession, transcript }) {
  * every flip together with the evidence that caused it: which pattern matched,
  * and what the bottom of the pane actually said. Transitions only — logging
  * every poll would bury the one line that matters. */
+/* The newest rate-limit reading any session has reported.
+ *
+ * These windows are the ACCOUNT's, not a session's, but they only arrive when
+ * some session re-renders its status line — so every session holds a snapshot
+ * from a different moment. Showing each session its own made the weekly number
+ * change as you switched tabs, which reads as a bug because it is one: the
+ * quota did not move, the observation time did. Newest wins, for everyone.
+ *
+ * With two accounts in play this shows whichever reported last rather than
+ * per-account values. That is a real limitation and a deliberate trade: the
+ * flicker was certain and observed, the second account is hypothetical. */
+function freshestLimits() {
+  /* Merged PER WINDOW, not per report. Claude Code omits a window entirely
+     when it has just rolled over — three sessions here reported seven_day
+     alone right after the 5-hour reset — so taking one session's object
+     wholesale made the 5h meter vanish for every tab the moment one of those
+     reports happened to be the newest. A report that is silent about a window
+     is not evidence that the window is gone. */
+  const out = {}
+  const at = {}
+  for (const v of hookState.values()) {
+    const seen = v?.limitsAt ?? 0
+    for (const [k, w] of Object.entries(v?.limits ?? {})) {
+      if (seen >= (at[k] ?? -1)) { out[k] = w; at[k] = seen }
+    }
+  }
+  /* A window whose reset time has passed is obsolete by definition: the window
+     rolled over and this number describes the previous one. Drop it rather
+     than show a stale bar, and let the next report re-establish it. */
+  const now = Date.now()
+  for (const [k, w] of Object.entries(out)) {
+    if (w?.resets && w.resets * 1000 < now) delete out[k]
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 const prevState = new Map()
 function logState(s, why, tail) {
   const p = prevState.get(s.name)
@@ -294,6 +355,19 @@ async function annotateWaiting(list) {
       s.waiting   = c.waiting
       s.latchMs   = d.latched ? pane.latchMs : 0  // an event needs no blink tolerance
       s.stateFrom = d.from                        // the ACTUAL decider
+
+      /* Reported by the status line, not inferred here. Undefined until the
+         first render arrives — the rail draws nothing rather than a zero,
+         because "0%" and "don't know yet" are different things. */
+      const hs = hookState.get(s.id)
+      s.ctxPct = hs?.ctxPct
+      s.model  = hs?.model
+      /* NOT hs.limits. These windows belong to the ACCOUNT, not the session,
+         and a session only reports them when it happens to re-render — so
+         per-session values are just snapshots from different moments, and the
+         weekly number visibly changed as you switched tabs. Every session gets
+         the newest reading anyone has. */
+      s.limits = freshestLimits()
 
       if (d.quietSince === null) hookQuiet.delete(s.name)
       else hookQuiet.set(s.name, d.quietSince)
@@ -345,6 +419,18 @@ async function annotateWaiting(list) {
 const CLAUDE_PROJECTS = join(process.env.HOME, '.claude', 'projects')
 const CONV_LIMIT = 80          // a picker, not an archive
 const CONV_HEAD  = 64 * 1024   // metadata lives in the first few lines
+/* …but RECENCY lives at the other end, and not in the file's mtime.
+ *
+ * Sorting by mtime looked right for months and is wrong: Claude Code appends
+ * its own housekeeping — bridge-session, system — to many transcripts at once,
+ * so fourteen conversations were stamped within the same 2.5 seconds and every
+ * one of them read "29m" in the picker, including ones untouched for days.
+ * mtime answers "when did Claude Code last write to this file", which is a
+ * different question from "when did you last talk in here".
+ *
+ * Generous, because a single attachment record can be enormous and the tail
+ * has to contain at least one complete message line to be any use. */
+const CONV_TAIL  = 256 * 1024
 let convCache = { at: 0, data: null }
 
 /** Pull {id, cwd, title, at} out of one transcript without reading all of it. */
@@ -372,7 +458,29 @@ async function readConversation(path, mtime) {
       if (id && cwd && title && firstUser) break
     }
     if (!id || !cwd) return null          // cannot resume what we cannot place
-    return { id, cwd, title: title || firstUser || basename(cwd), preview: firstUser || '', at: mtime }
+
+    /* When did this conversation last say anything? Read the END of the file
+       and take the newest user/assistant record's own timestamp. Only those
+       two types count: everything else in here is bookkeeping that Claude Code
+       writes on its own schedule, which is exactly what made every row show
+       the same age. Falls back to mtime when the tail holds no complete
+       message — wrong in the old way, rather than missing. */
+    const size = (await fh.stat()).size
+    const tailStart = Math.max(0, size - CONV_TAIL)
+    let at = mtime
+    if (size > 0) {
+      const t = await fh.read(Buffer.alloc(Math.min(CONV_TAIL, size)), 0,
+                              Math.min(CONV_TAIL, size), tailStart)
+      const tailLines = t.buffer.subarray(0, t.bytesRead).toString('utf8').split('\n')
+      if (tailStart > 0) tailLines.shift()     // first line of a mid-file read is a fragment
+      for (let i = tailLines.length - 1; i >= 0; i--) {
+        let d; try { d = JSON.parse(tailLines[i]) } catch { continue }
+        if (d.type !== 'user' && d.type !== 'assistant') continue
+        const ts = Date.parse(d.timestamp ?? '')
+        if (Number.isFinite(ts)) { at = ts; break }
+      }
+    }
+    return { id, cwd, title: title || firstUser || basename(cwd), preview: firstUser || '', at }
   } catch { return null }
   finally { await fh?.close().catch(() => {}) }
 }
@@ -396,6 +504,11 @@ async function readConversations() {
   const data = (await Promise.all(
     found.slice(0, CONV_LIMIT).map(f => readConversation(f.path, f.mtime))
   )).filter(Boolean)
+  /* Re-sort on the REAL timestamp. The slice above is ordered by mtime, which
+     is a fine cheap filter for "which files are worth opening" but not for the
+     order they are shown in — mtime moves when Claude Code writes housekeeping,
+     so the newest file is not reliably the newest conversation. */
+  data.sort((a, b) => b.at - a.at)
   convCache = { at: Date.now(), data }
   return data
 }
@@ -409,7 +522,35 @@ async function createSession({ id, cmd, cwd, cols, rows, skip, resume }) {
   const claudeCmd = 'claude'
     + (skip ? ' --dangerously-skip-permissions' : '')
     + (resume ? ` --resume ${resume}` : '')
-  const inner = cmd === 'claude' ? claudeCmd : `exec ${SHELL} -l`
+  /* A claude session must OUTLIVE claude.
+   *
+   * This used to be bare `claude`, which made the agent the tmux session's
+   * only command — so the moment it exited, tmux had nothing left to run and
+   * ended the session. The tab vanished from the rail with no click, no
+   * confirmation and no /kill in the log, and the conversation could only be
+   * recovered through the resume picker. Claude Code exits on its own for
+   * ordinary reasons: "Restart to update" after an auto-update (ten sessions
+   * here were spread across six different versions), /quit, ctrl-D, a crash.
+   *
+   * Falling through to a login shell keeps the tmux session, the id, the
+   * label, the scrollback and the tab. The echo is there because an empty
+   * shell prompt where an agent used to be is its own small mystery. */
+  /* …and when it falls through, the session RE-LABELS ITSELF as a shell.
+   *
+   * @oneterm_cmd is what the rail reads for the CC/SH tag and what the
+   * detector keys its patterns off, so leaving it on "claude" after the agent
+   * is gone means a shell being matched against spinner patterns and wearing a
+   * CC badge. The session is the only thing that knows the moment claude
+   * returned, so it reports that itself rather than the host guessing from the
+   * outside — pane_current_command cannot tell, since the wrapper shell is the
+   * pane's process either way.
+   *
+   * @oneterm_label is deliberately NOT touched: the tab keeps its name. */
+  const inner = cmd === 'claude'
+    ? `${claudeCmd}; ${TMUX} set-option -t ${name} @oneterm_cmd shell 2>/dev/null; ` +
+      `echo; echo "[oneterm] claude exited — this tab is now a shell. ` +
+      `run 'claude --continue' to pick up where you left off."; exec ${SHELL} -l`
+    : `exec ${SHELL} -l`
   // -d: create detached, so creation never depends on a client being ready.
   // -e: the inner shell inherits the HOST's environment, not the attach
   //     client's — so ONETERM_* set at attach time never reached the shell.
@@ -447,7 +588,25 @@ async function createSession({ id, cmd, cwd, cols, rows, skip, resume }) {
   // shells have no such flag — never stamp a session with a badge that lies
   await tmux(['set-option', '-t', name, '@oneterm_skip',
               (skip && cmd === 'claude') ? '1' : '0'])
-  await tmux(['set-option', '-t', name, '@oneterm_order', String(Date.now() % 100000)])
+  /* A new session belongs at the TOP of the rail.
+   *
+   * This used to be Date.now() % 100000 — a five-digit number sitting next to
+   * the 0, 10, 20… that dragging assigns, so every session you started landed
+   * underneath everything you started days ago, which is the opposite of where
+   * you are about to look. Place it above the current minimum instead.
+   *
+   * Only oneterm's own sessions count: `list-sessions` also returns whatever
+   * else lives on this tmux server, and those report an EMPTY @oneterm_order,
+   * which Number() reads as 0 and would drag the minimum to zero. */
+  const orders = (await tmux(['list-sessions', '-F', `#{session_name}|~|#{@oneterm_order}`]))
+    .split('\n')
+    .filter(l => l.startsWith(PREFIX))
+    .map(l => l.split('|~|')[1])
+    .filter(v => v !== undefined && v !== '')
+    .map(Number)
+    .filter(Number.isFinite)
+  const topOrder = orders.length ? Math.min(...orders) - 10 : 0
+  await tmux(['set-option', '-t', name, '@oneterm_order', String(topOrder)])
   // Let the pane use the full client size rather than the smallest ever attached.
   await tmux(['set-option', '-t', name, 'window-size', 'latest'])
   await tmux(['set-option', '-t', name, 'status', 'off'])   // no tmux bar; our UI is the chrome
@@ -730,6 +889,32 @@ async function route(req, res) {
     if (!m || typeof m.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(m.id)) {
       res.writeHead(400, {'content-type':'application/json'})
       return res.end(JSON.stringify({ error: 'bad_event' }))
+    }
+    /* These two are rendered into the rail and persisted to disk, so bound
+       them here rather than trusting the sender. Anything local can POST to
+       this route, and an unbounded model string would be drawn into the DOM
+       and written back out to agent-state.json on every restart. */
+    if (m.ctxPct !== undefined) {
+      const n = Math.round(Number(m.ctxPct))
+      m.ctxPct = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : undefined
+    }
+    if (m.model !== undefined) m.model = String(m.model).replace(/\s+/g, ' ').trim().slice(0, 24)
+    /* Rebuild the limits object from scratch rather than forwarding what was
+       sent: only these three windows are known, only two numbers each, and
+       both are drawn into the DOM and persisted. An unbounded object here
+       would grow agent-state.json for the life of the machine. */
+    if (m.limits && typeof m.limits === 'object') {
+      const clean = {}
+      for (const k of ['five_hour', 'seven_day', 'spend_limit']) {
+        const w = m.limits[k]
+        if (!w || typeof w !== 'object') continue
+        const pct = Math.round(Number(w.pct))
+        const resets = Math.round(Number(w.resets))
+        if (!Number.isFinite(pct)) continue
+        clean[k] = { pct: Math.max(0, Math.min(100, pct)),
+                     resets: Number.isFinite(resets) && resets > 0 ? resets : 0 }
+      }
+      m.limits = clean
     }
     applyAgentEvent(m)
     return json(res, { ok: true })

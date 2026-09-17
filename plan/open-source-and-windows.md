@@ -27,14 +27,14 @@ The fixtures are verbatim captures of live sessions. No credentials (scanned: no
 `sk-`, `ghp_`, `AKIA`, connection strings, bearer tokens). But they contain:
 
 ```
-/Users/olegdeduchenko/Projects/oneawaybuild | Fable 5.1 | ███████░░░ 71%
-/Users/olegdeduchenko/Projects/oneaway-app  | Opus 5 (1M context) | ██████░░░░ 65%
-⎿  $ cd /Users/olegdeduchenko/Projects/oneawaybuild; python3 - <<'PYEOF'
+/Users/dev/Projects/oneawaybuild | Fable 5.1 | ███████░░░ 71%
+/Users/dev/Projects/oneaway-app  | Opus 5 (1M context) | ██████░░░░ 65%
+⎿  $ cd /Users/dev/Projects/oneawaybuild; python3 - <<'PYEOF'
 ```
 
 Home path, internal project names, and one line of actual client work.
 
-**Fix:** a `sed` pass — `/Users/olegdeduchenko` → `/Users/you`, `oneawaybuild` →
+**Fix:** a `sed` pass — `/Users/dev` → `/Users/you`, `oneawaybuild` →
 `demo-build`, `oneaway-app` → `demo-app`. The detection patterns key on *position and
 shape* on the status line, never on path content, so the suite is unweakened. Verify
 24/24 still passes after the rewrite rather than assuming — the fixture whose status

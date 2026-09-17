@@ -41,9 +41,36 @@ export function hookWorking(entry, now = Date.now(), ttlMs = AGENT_TTL_MS) {
 }
 
 /** Fold one hook event into a session entry. Returns the entry, mutated. */
-export function applyEvent(entry, { action, claudeSession, transcript }, now = Date.now()) {
+export function applyEvent(entry, { action, claudeSession, transcript, model, ctxPct, ctxSize,
+                                    limits },
+                           now = Date.now()) {
   entry ??= { agents: {} }
   entry.agents ??= {}
+
+  /* Context, model and the account's rate-limit windows come from the STATUS
+     LINE, which Claude Code re-renders constantly and which reports the numbers
+     it computed itself. Record them before the gate below, because they are
+     worth having from any event that carries them.
+
+     limits are account-wide, so they are stamped with their own timestamp
+     rather than sharing entry.at (which a status report must never touch).
+     Storing them per session and SHOWING them per session are different
+     things: each session only reports when it re-renders, so per-session
+     display meant every tab showed a snapshot from a different moment and the
+     weekly number changed as you switched tabs. The server picks the freshest
+     across all sessions — see limitsAt in annotateWaiting. */
+  if (model !== undefined) entry.model = model
+  if (ctxPct !== undefined) entry.ctxPct = ctxPct
+  if (ctxSize) entry.ctxSize = ctxSize
+  if (limits && Object.keys(limits).length) { entry.limits = limits; entry.limitsAt = now }
+
+  /* A status report is the status line talking, not the agent. It says nothing
+     about whether a turn is running, and it arrives whether or not anything is
+     happening. Letting it reach the bookkeeping below would refresh a dead
+     agent's TTL forever — the exact failure AGENT_TTL_MS exists to end — and
+     stamp entry.at on a session nobody has touched in hours. */
+  if (action === 'status') return entry
+
   entry.at = now
   if (transcript) entry.transcript = transcript
   // ONETERM_SESSION is stamped on the TMUX session, so every pane, window and

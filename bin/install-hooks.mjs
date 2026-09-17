@@ -17,7 +17,7 @@
  *      itself, which is a far worse outcome than oneterm having no hook.
  *   4. Reversible, and back up once before the first change.
  */
-import { readFile, writeFile, mkdir, copyFile, chmod, rename, access } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, copyFile, chmod, rename, access, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -28,6 +28,15 @@ const HOOK_DIR = join(CLAUDE_HOME, 'hooks')
 const HOOK_DST = join(HOOK_DIR, 'oneterm-agent-state.sh')
 const HOOK_SRC = join(ROOT, 'hooks', 'oneterm-agent-state.sh')
 const MARK = 'oneterm-agent-state'          // how we recognise our own entries
+
+/* The status line is a SINGLE global setting, not a list like hooks, so there
+ * is no merging to do — taking it means taking it from whoever had it. We wrap
+ * instead: the previous command is parked in SL_INNER and the wrapper still
+ * runs it, so the user's own status line keeps rendering exactly as before. */
+const SL_DST   = join(HOOK_DIR, 'oneterm-statusline.sh')
+const SL_SRC   = join(ROOT, 'hooks', 'oneterm-statusline.sh')
+const SL_INNER = join(CLAUDE_HOME, 'oneterm-statusline.inner')
+const SL_MARK  = 'oneterm-statusline'
 
 /* Only events that are PROVEN to exist — SessionStart and Stop are both used by
  * herdr's shipped integration, UserPromptSubmit is documented by the hookify
@@ -100,6 +109,30 @@ async function main() {
   if (Object.keys(hooks).length) next.hooks = hooks
   else delete next.hooks
 
+  // --- status line: where the context % actually comes from -----------------
+  const sl = before.statusLine
+  const slWasOurs = typeof sl?.command === 'string' && sl.command.includes(SL_MARK)
+
+  if (!uninstall) {
+    await copyFile(SL_SRC, SL_DST)
+    await chmod(SL_DST, 0o755)
+    /* Park the previous command — but ONLY when it is not already ours. On a
+       re-run (upgrade, repair) the setting points at the wrapper, and copying
+       that into the sidecar would have the wrapper invoke itself: an infinite
+       recursion, fired on every render, on every session on the machine. */
+    if (!slWasOurs) {
+      const inner = (sl?.type === 'command' && typeof sl.command === 'string') ? sl.command : ''
+      await writeFile(SL_INNER, inner + '\n')
+    }
+    next.statusLine = { type: 'command', command: `sh '${SL_DST}'` }
+  } else {
+    const inner = await readFile(SL_INNER, 'utf8').then(t => t.trim(), () => '')
+    if (inner) next.statusLine = { type: 'command', command: inner }
+    else if (slWasOurs) delete next.statusLine     // there was nothing here before us
+    await rm(SL_INNER, { force: true })
+    await rm(SL_DST, { force: true })
+  }
+
   // Prove we did not disturb anyone else before writing.
   const otherToolsAfter = JSON.stringify(stripOurs(next.hooks))
   if (otherToolsBefore !== otherToolsAfter) {
@@ -116,8 +149,11 @@ async function main() {
 
   const others = Object.values(stripOurs(next.hooks)).flat().length
   console.log(uninstall
-    ? `removed oneterm hooks from ${SETTINGS} (${others} other entr${others === 1 ? 'y' : 'ies'} untouched)`
+    ? `removed oneterm hooks from ${SETTINGS} (${others} other entr${others === 1 ? 'y' : 'ies'} untouched)\n` +
+      `  status line restored to: ${next.statusLine?.command ?? '(none)'}`
     : `installed ${Object.keys(EVENTS).join(', ')} → ${HOOK_DST}\n` +
+      `  status line → ${SL_DST}` +
+      (slWasOurs ? ' (already wrapped)' : `, wrapping: ${(await readFile(SL_INNER, 'utf8').catch(() => '')).trim() || '(nothing was set)'}`) + '\n' +
       `  ${others} other hook entr${others === 1 ? 'y' : 'ies'} left untouched`)
 }
 

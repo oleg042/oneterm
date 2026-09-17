@@ -23,6 +23,19 @@ export function liveTail(tail, lines = 25) {
  * record the real range. */
 export const LIVE_LINES = 20
 
+/* How much of the pane the detector is allowed to see.
+ *
+ * Lines, not bytes. A byte cap is a different number of lines on every
+ * terminal width — 2000 chars is ~25 lines at 80 columns but only ten at 191 —
+ * so on a wide pane the window silently shrank below LIVE_LINES and cut the
+ * live spinner off entirely. Shared with server.mjs and with the tests so all
+ * three shape the pane identically; a test that trimmed differently from the
+ * host was how this stayed invisible. */
+export const PANE_LINES = 60
+export const PANE_CHARS = 24000
+export const paneWindow = raw =>
+  raw.replace(/\s+$/, '').split('\n').slice(-PANE_LINES).join('\n').slice(-PANE_CHARS)
+
 export const WAITING = [
   /* /Do you want (to|me)/ was here and had to go: it is PROSE, not a prompt.
    * Claude Code ends turns with "do you want me to build it?" constantly, and
@@ -62,7 +75,14 @@ export const WORKING = [
    * flapped work 1->0->1 as lines scrolled, one false "done" chime per flap;
    * the second pinned a session busy for 41 minutes. Only the live spinner
    * writes "word… (elapsed", so the ellipsis stops both. */
-  /…\s*\((?:\d+[hms]\s*)+[·)]/,
+  /* Anchored to the START of a line, with room for the spinner glyph. The
+   * leading … alone was not enough: a transcript line can END in an ellipsis
+   * and be followed by a collapsed duration — "…, writes … (5m 48s · 2 lines)"
+   * — which is a FINISHED tool call, not a running turn. That shape sat three
+   * lines above a live spinner in a real pane, so any window wide enough to
+   * reach the real marker also swallowed the fake one. Only the spinner slot
+   * puts "word… (elapsed" at the head of its own line. */
+  /^\s*(?:\S{1,2}\s+)?[A-Za-z][\w-]*…\s*\((?:\d+[hms]\s*)+[·)]/m,
   /* The spinner GLYPH animates through a set we cannot enumerate reliably, so
    * match the SHAPE instead: a mark, a word ending in an ellipsis, then the
    * timer's opening paren. Enumerating glyphs made detection blink at
@@ -89,6 +109,19 @@ export const BACKGROUND = [
    * which this refuses. That is what lets the window be wide enough to clear
    * the agent panel without that sentence pinning a session busy forever. */
   /·\s*[1-9]\d*\s+shells?\s*(?=·|$)/m,
+  /* A turn that handed off to a BACKGROUND AGENT. The main loop finishes and
+   * parks at an empty prompt, the hook fires Stop, and every foreground
+   * pattern misses — while an agent runs for ten more minutes and the rail
+   * reads idle. This is Claude Code's own status-line text, so it is anchored
+   * to a whole line (with room for the animating spinner glyph in front) and
+   * refuses the same sentence written inside a transcript paragraph.
+   *
+   * Deliberately NOT the agent panel below it: "⏺ main / ◯ general-purpose"
+   * could not be shown to drop when an agent finishes, and neither could the
+   * "← N agents" counter — sampling all ten live sessions found "← 7 agents"
+   * present on nine of them, including completely idle ones. A counter that
+   * never returns to zero pins a session busy for life. */
+  /^\s*\S{0,2}\s*Waiting for [1-9]\d*\s+background agents?\s+to finish\s*$/m,
 ]
 /* "← N agents" is deliberately NOT a marker. Three minutes of sampling a live
  * session showed "1 shell · ← 7 agents" completely static, so it could not be

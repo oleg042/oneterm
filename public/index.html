@@ -29,10 +29,14 @@
    ─────────────────────────────────────────────────────────────────────────── */
 :root{
   --paper:#F7F5F1; --rail:#F1EEE8; --raise:#EAE6DE; --sink:#FFFFFF;
-  --ink:#1C1A17; --muted:#78736B; --faint:#A8A29A;
+  --ink:#1C1A17; --muted:#57524A; --faint:#736D65;
   --line:rgba(28,26,23,.08); --line2:rgba(28,26,23,.14);
   --accent:#C4551F; --accent-soft:rgba(196,85,31,.09);
   --ok:#5B7F5B; --warn:#B08A2E; --err:#A8402F;
+  /* Lightness for the context bar. Hue and saturation are set per-row from
+     the percentage; only the lightness is a theme decision, so the same ramp
+     stays legible on paper and on ink. */
+  --ctx-l:40%;
   --r:4px; --ease:cubic-bezier(.22,.61,.36,1); --sp:180ms;
   --ui:'Zen Kaku Gothic New',system-ui,-apple-system,sans-serif;
   --mono:'JetBrains Mono','Apple Symbols',monospace;
@@ -43,6 +47,7 @@ html[data-theme="dark"]{
   --line:rgba(237,233,225,.09); --line2:rgba(237,233,225,.16);
   --accent:#E0703A; --accent-soft:rgba(224,112,58,.13);
   --ok:#7BA57B; --warn:#D9AE55; --err:#D1705C;
+  --ctx-l:56%;
 }
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -128,6 +133,14 @@ aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:v
 .sess .warn{flex:none;color:var(--warn);font-size:10px;font-style:normal}
 .sess .p{font-family:var(--mono);font-size:10px;color:var(--faint);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
+/* Context rides the line the path already had: path left, percent right. No
+   bar in the row — at 1px it was more texture than reading, and the number
+   says the same thing in less space. The percent keeps the shared ramp so the
+   colour still carries at a glance without a second element to draw. */
+.sess .p{display:flex;align-items:baseline;gap:8px}
+.sess .p .pth{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sess .p .pct{flex:none;font-variant-numeric:tabular-nums;
+  color:hsl(var(--ctx-h,145) var(--ctx-s,38%) var(--ctx-l))}
 .sess .x{cursor:pointer;position:absolute;right:6px;top:50%;transform:translateY(-50%);opacity:0;
   width:18px;height:18px;line-height:1;border-radius:3px;color:var(--faint);
   font-size:14px;transition:opacity var(--sp) var(--ease)}
@@ -148,14 +161,30 @@ body.rail-dragging .sess{user-select:none}
   border-radius:3px;padding:3px 6px;font-family:var(--ui);font-size:13px;
   color:var(--ink);outline:none}
 
-.railfoot{margin-top:auto;padding:10px 10px 12px;display:flex;flex-direction:column;gap:2px}
+.railfoot{margin-top:auto;padding:6px 10px 10px;display:flex;flex-direction:column;gap:1px}
+/* Account rate-limit meters, above the menu. Account-wide rather than
+   per-session, so they sit with the app's own controls rather than in the
+   session list. Same colour ramp as the session bars: one language for
+   "how full is this", whether it is a context window or a quota window. */
+.meters{display:flex;flex-direction:column;gap:6px;padding:10px 12px 4px;margin-top:4px;
+  border-top:1px solid var(--line)}
+.meters:empty{display:none}
+.meter{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:9px;
+  letter-spacing:.05em;color:var(--faint)}
+.meter .lab{flex:none;width:14px}
+.meter .trk{flex:1 1 auto;height:1px;border-radius:99px;background:var(--line2);overflow:hidden}
+.meter .trk i{display:block;height:100%;width:0;border-radius:99px;
+  background:hsl(var(--ctx-h,145) var(--ctx-s,38%) var(--ctx-l));
+  transition:width 320ms var(--ease),background-color 320ms var(--ease)}
+.meter .rst{flex:none;font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){.meter .trk i{transition:none}}
 .iconrow{display:flex;gap:2px;margin-top:4px;padding-left:2px}
 .ico{width:30px;height:30px;border-radius:var(--r);color:var(--faint);font-size:13px;
   display:grid;place-items:center;
   transition:background var(--sp) var(--ease),color var(--sp) var(--ease),opacity var(--sp)}
 .ico:hover{background:var(--raise);color:var(--ink)}
 .ico.muted{opacity:.35}
-.railbtn{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r);
+.railbtn{display:flex;align-items:center;gap:10px;padding:6px 12px;border-radius:var(--r);
   color:var(--muted);font-size:12.5px;
   transition:background var(--sp) var(--ease),color var(--sp) var(--ease)}
 .railbtn:hover{background:var(--raise);color:var(--ink)}
@@ -220,7 +249,8 @@ body.rail-dragging .sess{user-select:none}
 .docfoot{flex:0 0 auto;padding:8px 14px;border-top:1px solid var(--line);
   font-family:var(--mono);font-size:9.5px;color:var(--faint);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.row .open{flex:none;width:24px;text-align:center;color:var(--muted);font-size:15px;
+.row .open{flex:none;padding:2px 6px;text-align:center;color:var(--faint);
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.04em;white-space:nowrap;
   border-radius:3px;transition:color var(--sp) var(--ease)}
 .row .open:hover{color:var(--accent)}
 .stack{flex:1 1 auto;min-width:0;height:100%;display:flex;flex-direction:column;
@@ -268,9 +298,24 @@ footer .skipwarn{color:var(--warn)}
 .scrim{position:fixed;inset:0;z-index:20;display:none;padding-top:12vh;
   background:color-mix(in srgb, var(--paper) 55%, transparent);backdrop-filter:blur(6px)}
 .scrim.open{display:block}
-.sheet{width:min(560px,92vw);margin:0 auto;background:var(--sink);
+.sheet{position:relative;width:min(560px,92vw);margin:0 auto;background:var(--sink);
   border:1px solid var(--line);border-radius:8px;overflow:hidden;
   box-shadow:0 1px 2px rgba(0,0,0,.04), 0 24px 60px rgba(0,0,0,.14)}
+/* Reading a skill costs a round trip. Closing the sheet first left the screen
+   with nothing on it for the length of that trip, which reads as a dropped
+   click. Hold the sheet, cover it, and close only once the doc is up. */
+.sheetload{position:absolute;inset:0;z-index:3;display:flex;align-items:center;
+  justify-content:center;background:color-mix(in srgb,var(--sink) 72%,transparent);
+  backdrop-filter:blur(1.5px)}
+/* display:flex outranks the UA's [hidden] rule, so say it explicitly. */
+.sheetload[hidden]{display:none}
+.sheetload i{width:22px;height:22px;border-radius:99px;
+  border:2px solid var(--line2);border-top-color:var(--accent);
+  animation:spin 620ms linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* A spinner that cannot spin is just a ring, so give it a pulse instead. */
+@media (prefers-reduced-motion:reduce){
+  .sheetload i{animation:pulseDot 1.1s ease-in-out infinite}}
 .sheet input.q{width:100%;padding:16px 18px;background:transparent;border:0;
   color:var(--ink);font-family:var(--ui);font-size:15px;outline:none}
 .sheet .qwrap{border-bottom:1px solid var(--line)}
@@ -327,9 +372,10 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
   <div class="brand">one<b>term</b></div>
   <div class="slist" id="slist"></div>
   <div class="railfoot">
-    <button class="railbtn" id="newBtn"><i class="g">+</i><span>New session</span><span class="k">&#8984;E</span></button>
-    <button class="railbtn" id="skillsBtn"><i class="g">&#9671;</i><span>Skills</span><span class="k" id="skillCount">&#8984;J</span></button>
-      <button class="railbtn" id="resumeBtn"><i class="g">&#8635;</i><span>Resume session</span><span class="k">&#8679;&#8984;R</span></button>
+    <div class="meters" id="meters"></div>
+    <button class="railbtn" id="newBtn"><i class="g">+</i><span>New session</span></button>
+    <button class="railbtn" id="skillsBtn"><i class="g">&#9671;</i><span>Skills</span><span class="k" id="skillCount"></span></button>
+      <button class="railbtn" id="resumeBtn"><i class="g">&#8635;</i><span>Resume session</span></button>
     <div class="iconrow">
       <button class="ico" id="themeBtn" title="Light / dark">&#9680;</button>
       <button class="ico" id="soundBtn" title="Sound">&#9834;</button>
@@ -370,6 +416,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
 
 <div class="scrim" id="palette">
   <div class="sheet">
+    <div class="sheetload" id="sheetLoad" hidden><i></i></div>
     <div class="opts" id="skillTabs" hidden>
       <div class="seg" id="skillseg">
         <button data-tab="all" aria-pressed="true">All</button>
@@ -906,15 +953,91 @@ async function refresh(){
     a.wasWaiting = s.waiting
     activity.set(s.id, a)
   }
+  // ctxPct and model belong here too: paintRail only runs when this changes,
+  // so a bar left out of the signature would draw once and then sit frozen.
   const sig = JSON.stringify(list.map(s => [s.id, s.label, s.cwd, s.waiting, s.working, s.cmd, s.skip,
+                                            s.ctxPct, s.model,
                                             (activity.get(s.id)||{}).doneUnseen]))
   const changed = sig !== lastSig; lastSig = sig
   sessions = list
   if (!sessions.some(s => s.id === active)) active = sessions[0]?.id ?? null
   // a 4s poll that repaints unconditionally restarts the pulse too
   if (changed) paintRail(); else paintTitle()
+  // Unconditional: the reset CLOCK moves even when no session state does, and
+  // the meters sit outside the rail signature that gates paintRail.
+  paintMeters()
   return sessions
 }
+/* The second line of a rail row. Once the status line has reported, it carries
+   the two things that actually move hour to hour — which model is answering,
+   and how full its window is. Until then it carries the path, exactly as it
+   always did: a session that has not reported yet and a session with an empty
+   window are different states, and drawing "0%" for the first would be a lie.
+   Either way the path stays reachable on hover, so nothing was taken away. */
+/* Percentage → [hue, saturation]. Green while there is room to work, ramping
+   through yellow, and into a dark orange-red rather than a pure red — this
+   reports pressure, it is not an error. The ramp is CONTINUOUS: with no number
+   printed next to it the colour is the only reading, and stepping between
+   three fixed colours would imply thresholds the underlying number does not
+   have. Saturation climbs with the hue so a full window also reads as louder,
+   which is what carries it at 2px on a glance. */
+function ctxRamp(p){
+  if (p <= 50) return [145, 38]                                   // green, steady
+  if (p <= 80) { const t = (p - 50) / 30                          // → yellow
+                 return [145 + (45 - 145) * t, 38 + (62 - 38) * t] }
+  const t = Math.min(1, (p - 80) / 20)                            // → dark orange-red
+  return [45 + (14 - 45) * t, 62 + (74 - 62) * t]
+}
+
+/* The path line, plus the context percent when the status line has reported
+   one. Nothing is drawn for a session that has told us nothing: "0%" and
+   "don't know yet" are different states, and only one of them is a fact. */
+function pathLine(s){
+  const pth = '<span class="pth">' + esc(tilde(s.cwd)) + '</span>'
+  if (typeof s.ctxPct !== 'number') return '<span class="p">' + pth + '</span>'
+  const [h, sat] = ctxRamp(s.ctxPct)
+  return '<span class="p">' + pth + '<span class="pct" style="--ctx-h:' + h.toFixed(0)
+       + ';--ctx-s:' + sat.toFixed(0) + '%">' + s.ctxPct + '%</span></span>'
+}
+
+/* When a rate-limit window next resets. The ask was for the time it resets,
+   not how long is left: "05:00" is something you can plan a morning around,
+   where "3h 36m" has to be re-read every time you glance at it. A weekday goes
+   in front once it is far enough out that the bare clock time is ambiguous. */
+function fmtReset(ts){
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')
+  return (ts * 1000 - Date.now() < 20 * 3600 * 1000)
+    ? hhmm
+    : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()] + ' ' + hhmm
+}
+
+/* The account's rate-limit windows. Claude Code sends only the windows that
+   apply, so this renders whatever arrived — two on a plan account, three
+   behind a spend limit — rather than reserving rows for numbers that may not
+   exist. There is no model-scoped window in the payload at all, so no
+   Fable-specific meter is possible from this source. */
+const METERS = [['5h', 'five_hour', '5-hour'], ['7d', 'seven_day', 'weekly'],
+                ['$', 'spend_limit', 'spend']]
+function paintMeters(){
+  const box = $('meters'); if (!box) return
+  // Prefer the session you are looking at: with two accounts in play the
+  // windows genuinely differ, and the ones on screen should be its own.
+  const src = sessions.find(x => x.id === active && x.limits) ?? sessions.find(x => x.limits)
+  const L = src?.limits
+  if (!L) { box.innerHTML = ''; return }
+  box.innerHTML = METERS.filter(([, k]) => L[k]).map(([lab, k, name]) => {
+    const w = L[k], [h, sat] = ctxRamp(w.pct)
+    return '<div class="meter" title="' + name + ' limit — ' + w.pct + '% used'
+         + (w.resets ? ', resets ' + new Date(w.resets * 1000).toLocaleString() : '') + '">'
+         + '<span class="lab">' + lab + '</span>'
+         + '<span class="trk"><i style="width:' + w.pct + '%;'
+         + '--ctx-h:' + h.toFixed(0) + ';--ctx-s:' + sat.toFixed(0) + '%"></i></span>'
+         + '<span class="rst">' + fmtReset(w.resets) + '</span></div>'
+  }).join('')
+}
+
 function paintRail(){
   if (renaming) return          // a repaint mid-rename destroys the input you're typing in
   const box = $('slist'); box.innerHTML = ''
@@ -928,7 +1051,10 @@ function paintRail(){
     const el = document.createElement('div')
     el.setAttribute('role', 'button'); el.tabIndex = 0
     el.className = 'sess' + (s.id === active ? ' on' : '') + (st ? ' s-' + st : '')
-    el.title = s.cwd + (s.skip ? '  ·  permissions skipped' : '') + '  ·  double-click to rename'
+    el.title = s.cwd
+      + (typeof s.ctxPct === 'number'
+          ? `  ·  ${s.model || 'claude'}, ${s.ctxPct}% of context used` : '')
+      + (s.skip ? '  ·  permissions skipped' : '') + '  ·  double-click to rename'
     el.innerHTML =
       '<i class="d ' + cls + '"></i><span class="txt">' +
       '<span class="t"><span class="nm">' + esc(s.label) + '</span>' +
@@ -937,7 +1063,7 @@ function paintRail(){
          motion, and repeating it in text stole the room the session NAME
          needed — which is the one thing the dot cannot tell you. */
       (s.skip ? '<i class="warn">!</i>' : '') +
-      '</span><span class="p">' + esc(tilde(s.cwd)) + '</span></span>'
+      '</span>' + pathLine(s) + '</span>'
     el.onclick = () => switchTo(s.id)
     el.onkeydown = e => {                       // keep keyboard activation, minus Space
       if (renaming) return
@@ -1067,10 +1193,39 @@ function showSheet(which, mode = 'skill'){
     paletteMode === 'resume'
       ? HM + '<span><kbd>&#8629;</kbd> resume in a new session</span>' + HC
       : HM + '<span><kbd>&#8629;</kbd> insert</span>'
-           + '<span><kbd>&#9636;</kbd> or <kbd>&#8594;</kbd> read</span>'
+           + '<span><kbd>open .md</kbd> or <kbd>&#8594;</kbd> read</span>'
            + '<span><kbd>&#9734;</kbd> favourite</span>' + HC
   for (const o of $('skillseg').children) o.setAttribute('aria-pressed', String(o.dataset.tab === skillTab))
   inp.focus(); render()
+  /* Re-read the catalogue the palette is about to show. Both lists used to be
+     fetched exactly once, at page load, and this tab stays open for days — so
+     the resume list aged in place: every row read "6h" because the timestamps
+     were six hours old while ago() measured against the current clock, and
+     conversations continued since load still carried their value from load.
+     Opening the palette is the one moment the data is about to be read, and
+     the host caches /conversations for 15s, so this costs nothing. */
+  refreshCatalogue(which === 'palette' ? paletteMode : null)
+}
+
+/* Fire and forget: the sheet is already on screen, so re-render only if the
+   data actually changed. Never awaited by showSheet — a fetch on the opening
+   frame is what made the skills palette feel like a dropped click. */
+async function refreshCatalogue(mode){
+  if (mode === 'resume'){
+    const cv = await api('/conversations')
+    if (!cv) return
+    const changed = cv.length !== conversations.length
+      || cv.some((c, i) => c.id !== conversations[i]?.id || c.at !== conversations[i]?.at)
+    conversations = cv
+    if (changed && openSheet === 'palette' && paletteMode === 'resume') render()
+  } else if (mode === 'skill'){
+    const sk = await api('/skills')
+    if (!sk) return
+    const changed = sk.length !== skills.length
+    skills = sk
+    $('skillCount').textContent = String(skills.length)
+    if (changed && openSheet === 'palette' && paletteMode === 'skill') render()
+  }
 }
 function closeSheet(){
   if (!openSheet) return
@@ -1199,7 +1354,7 @@ function render(){
       '" data-i="' + i + '">' +
     (starred ? '<span class="star' + (favs.has(it.path) ? ' on' : '') + '" data-fav="' +
        esc(it.path) + '" title="favourite">' + (favs.has(it.path) ? '★' : '☆') + '</span>' : '') +
-    (starred ? '<span class="open" data-open="' + i + '" title="Read this skill">&#9636;</span>' : '') +
+    (starred ? '<span class="open" data-open="' + i + '" title="Read this skill">open .md</span>' : '') +
     '<span class="kind">' + it.kind + '</span><span class="t">' + esc(it.t) + '</span>' +
     '<span class="s">' + esc(it.s || '') + '</span></div>').join('')
     : '<div class="empty">' +
@@ -1217,7 +1372,7 @@ function render(){
       const it = items[Number(op.dataset.open)]
       // open THIS row's file. Looking it up by name opened the global copy when
       // you clicked the project row, and stamped the wrong scope on the panel.
-      if (it?.skill){ closeSheet(); openDoc(it.skill) }
+      if (it?.skill){ openSkillFromSheet(it.skill) }
     }
   }
   if (starred) $('skillTabCount').textContent =
@@ -1267,7 +1422,7 @@ addEventListener('keydown', e => {
   if (e.key === 'Escape'){ e.preventDefault(); closeSheet() }
   else if (e.key === 'ArrowRight' && paletteMode === 'skill'){
     const it = items[sel]                    // the sheet is keyboard-first; the reader was not
-    if (it?.skill){ e.preventDefault(); closeSheet(); openDoc(it.skill) }
+    if (it?.skill){ e.preventDefault(); openSkillFromSheet(it.skill) }
   }
   else if (e.key === 'ArrowDown'){ e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); render() }
   else if (e.key === 'ArrowUp'){ e.preventDefault(); sel = Math.max(sel - 1, 0); render() }
@@ -1387,9 +1542,23 @@ function renderMd(src){
   return out.join('')
 }
 
+/* Let the browser actually PAINT before handing it work that blocks. Two rAFs
+   put us after the next paint; the timeout is the escape hatch, because rAF
+   never fires in a background tab. Defined above its callers on purpose — a
+   `const` used before its initialiser is a temporal dead zone, and that one
+   passes `node --check` and throws only at runtime. */
+const paint = () => new Promise(res => {
+  let done = false
+  const fin = () => { if (!done) { done = true; res() } }
+  requestAnimationFrame(() => requestAnimationFrame(fin))
+  setTimeout(fin, 60)
+})
+
 async function openDoc(skill){
   const r = await api('/skill?path=' + encodeURIComponent(skill.path))
-  if (!r?.text){ toast("couldn't open that skill"); return }
+  // Returns whether it opened, so the caller can decide what to do with the
+  // sheet it is holding open on this call's behalf.
+  if (!r?.text){ toast("couldn't open that skill"); return false }
   docOpen = skill
   $('docName').textContent  = '/' + skill.name
   const cwd = sessions.find(x => x.id === active)?.cwd || ''
@@ -1405,7 +1574,35 @@ async function openDoc(skill){
   $('docBody').innerHTML    = renderMd(r.text)
   $('docBody').scrollTop = 0
   $('doc').hidden = false
+  /* Paint the document BEFORE resizing the terminal. Opening this panel makes
+     the terminal narrower, and xterm reflows its whole scrollback to match —
+     synchronously, and on a long session that is the multi-second stall people
+     read as "the click did nothing". Run it in the same frame as the reveal
+     and the browser never gets to draw the doc first: you wait through the
+     reflow, then everything appears at once. Yield a frame, show the skill,
+     then let the terminal catch up. */
+  await paint()
   scheduleResize()                      // the terminal keeps working, just narrower
+  return true
+}
+
+/* Open a skill FROM the palette. The sheet stays up, covered by a spinner,
+   until the document is actually on screen — and stays up if the read fails,
+   so the toast lands on the list you were choosing from rather than on an
+   empty screen. */
+let skillLoading = false
+
+async function openSkillFromSheet(skill){
+  if (skillLoading) return               // a second click during the round trip
+  skillLoading = true
+  $('sheetLoad').hidden = false
+  try {
+    await paint()
+    if (await openDoc(skill)) closeSheet()
+  } finally {
+    skillLoading = false
+    $('sheetLoad').hidden = true
+  }
 }
 function closeDoc(){
   if (!docOpen) return
@@ -1519,7 +1716,7 @@ function firstRun(){
   sendResize()
   const [sk, pr, cv] = await Promise.all([api('/skills'), api('/projects'), api('/conversations')])
   skills = sk ?? []; projects = pr ?? []; conversations = cv ?? []
-  $('skillCount').textContent = skills.length + ' ⌘J'
+  $('skillCount').textContent = String(skills.length)
   await refresh()
   if (!sessions.length) firstRun()
   else {

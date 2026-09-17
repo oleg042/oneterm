@@ -82,6 +82,18 @@ if ! bash "$DIR/test/hook-script.test.sh" >/tmp/oneterm-hookscript.log 2>&1; the
 fi
 echo "  hook script tests pass ($(grep -c '✓' /tmp/oneterm-hookscript.log) checks)"
 
+# The status line wrapper runs on every RENDER of every session, and it holds a
+# setting the user may already have been using. It also has to survive this
+# very script: the host goes down for a moment here, and a reading reported
+# into that gap must be retried rather than silently marked as sent.
+if ! bash "$DIR/test/statusline.test.sh" >/tmp/oneterm-statusline.log 2>&1; then
+  echo
+  echo "✗ status line tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-statusline.log | tail -20
+  exit 1
+fi
+echo "  status line tests pass ($(grep -c '✓' /tmp/oneterm-statusline.log) checks)"
+
 OLD_PID=$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/health" 2>/dev/null \
           | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')
 SESSIONS_BEFORE=$(tmux ls -F '#{session_name}' 2>/dev/null | grep -c '^oneterm_' || echo 0)

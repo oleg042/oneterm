@@ -129,6 +129,61 @@ console.log('\n8. the hook can never veto the pane (the invariant, exhaustively)
   is(violations, 0, 'across all 12 combinations, a live pane is never reported idle')
 }
 
+console.log('\n9. status reports carry data without pretending to be turn boundaries')
+{
+  // The status line re-renders constantly and knows nothing about turns.
+  const e = applyEvent(undefined, { action: 'status', model: 'Fable 5.1', ctxPct: 81,
+                                    ctxSize: 1_000_000 }, 1000)
+  is(e.model, 'Fable 5.1', 'model is recorded')
+  is(e.ctxPct, 81, 'context percent is recorded')
+  is(e.ctxSize, 1_000_000, 'window size is recorded')
+  is(Object.keys(e.agents).length, 0, 'no agent bucket is invented for a status report')
+  is(e.at, undefined, 'and entry.at is NOT stamped — nothing happened')
+  is(hookWorking(e), undefined, 'a status report never implies a working state')
+
+  // THE TRAP: status events arrive whether or not anything is running. If they
+  // refreshed an agent's timestamp, AGENT_TTL_MS could never expire a dead
+  // agent and the session would read busy forever.
+  const live = { at: 1000, agents: { a: { working: true, at: 1000 } } }
+  applyEvent(live, { action: 'status', ctxPct: 50 }, 5_000_000)
+  is(live.agents.a.at, 1000, 'a dead agent\'s TTL clock is not refreshed by a status report')
+  is(live.at, 1000, 'nor is the session\'s own timestamp')
+  is(live.ctxPct, 50, 'but the number still lands')
+
+  // A real event still behaves exactly as before.
+  const t = applyEvent(live, { action: 'stop', claudeSession: 'a' }, 6000)
+  is(t.agents.a.working, false, 'a real stop still stops the agent')
+  is(t.at, 6000, 'and still stamps the session')
+
+  // Absent fields must not blank out what we already knew.
+  applyEvent(live, { action: 'start', claudeSession: 'a' }, 7000)
+  is(live.ctxPct, 50, 'an event with no context data leaves the last reading alone')
+  is(live.model, undefined, 'and never invents one')
+}
+
+console.log('\n10. rate-limit windows are stamped so the freshest can win')
+{
+  /* These belong to the ACCOUNT, not the session, but they only arrive when a
+     session re-renders — so each session holds a snapshot from a different
+     moment. Showing each its own made the weekly number change as you switched
+     tabs. The stamp is what lets the server pick the newest for everyone. */
+  const a = applyEvent(undefined, { action: 'status', ctxPct: 1,
+                                    limits: { seven_day: { pct: 67, resets: 9 } } }, 1000)
+  const b = applyEvent(undefined, { action: 'status', ctxPct: 1,
+                                    limits: { seven_day: { pct: 71, resets: 9 } } }, 2000)
+  is(a.limitsAt, 1000, 'the older reading carries its own timestamp')
+  is(b.limitsAt, 2000, 'and so does the newer one')
+  is(a.at, undefined, 'stamping limits still does not stamp the session')
+
+  const freshest = [a, b].reduce((m, e) => (e.limitsAt ?? 0) > (m.limitsAt ?? 0) ? e : m)
+  is(freshest.limits.seven_day.pct, 71, 'newest reading wins across sessions')
+
+  // An event carrying no limits must not wipe the ones we have.
+  applyEvent(b, { action: 'status', ctxPct: 2 }, 3000)
+  is(b.limits.seven_day.pct, 71, 'a status report without limits leaves them alone')
+  is(b.limitsAt, 2000, 'and does not re-stamp them as fresh')
+}
+
 console.log(`\n─────────────────────────────\n  ${pass} passed, ${fail} failed`)
 console.log(fail ? '  state machine is WRONG — do not ship\n' : '  state machine holds.\n')
 process.exit(fail ? 1 : 0)
