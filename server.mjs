@@ -930,7 +930,17 @@ async function route(req, res) {
    * Same end result: you drop a screenshot, the agent gets a path it can read. */
   if (p === '/drop') {
     const raw  = (url.searchParams.get('name') || 'file').split(/[\\/]/).pop()
-    const safe = (raw.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '') || 'file').slice(0, 120)
+    /* Keep the name. This used to whitelist [A-Za-z0-9._-], which turns every
+       letter of a Cyrillic filename into an underscore — a FigJam export came
+       through as twenty underscores and "-2.jam". The client shell-quotes the
+       path before typing it, so spaces and any script are safe end to end;
+       what actually needs removing is control characters, path separators
+       (already split off above), the characters Windows refuses in a name,
+       and a leading dot that would hide the file or spell "..". */
+    const safe = (raw
+      .replace(/[\p{Cc}\p{Cf}\\/:*?"<>|]/gu, '_')
+      .replace(/^\.+/, '')
+      .trim() || 'file').slice(0, 120)
     const dir  = join(DROPS, new Date().toISOString().slice(0, 10))
     await mkdir(dir, { recursive: true })
 
