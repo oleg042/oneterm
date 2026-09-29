@@ -616,6 +616,13 @@ function connect(id){
       setConn(false, 'session ended')
       dropPending(id, 'the session ended')
       activity.delete(id)
+      /* Forget it NOW, not only when refresh() says so. refresh() can decline
+         to run (mid-drag, mid-rename) and leave the list stale, and "the next
+         session" was then another dead one — whose 4404 picked this one back.
+         Two killed tabs ping-ponged about 84 times a second, blanking the
+         terminal on every hop, and rebuilding the rail so fast no click could
+         land. Dropping each dead id as it is found means the hunt ends. */
+      sessions = sessions.filter(s2 => s2.id !== id)
       await refresh()
       const next = sessions.find(s2 => s2.id !== id)
       if (next) switchTo(next.id)
@@ -865,6 +872,8 @@ const BRANCH_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" 
    actually move. */
 let drag = null
 const DRAG_THRESHOLD = 4          // px before a press becomes a drag, so clicks survive
+/* A repaint that arrived mid-press, owed once the press ends. See paintRail. */
+let railOwed = false
 
 function beginDrag(e, el, id){
   if (e.button !== 0 || renaming) return
@@ -876,8 +885,15 @@ function beginDrag(e, el, id){
   const step = rows.length > 1 ? rects[1].top - rects[0].top : rects[0].height
   drag = { id, el, rows, idx, to: idx, step, startY: e.clientY, moved: false }
   el.setPointerCapture?.(e.pointerId)
-  el.onpointermove = onDragMove
-  el.onpointerup = el.onpointercancel = endDrag
+  /* On the WINDOW, not the row. These used to hang off the row element, and a
+     row is rebuilt by every paintRail — so a repaint mid-press detached the
+     element holding the handlers, the release went nowhere, and the drag
+     never ended. dragId stayed set, which refresh() reads as "mid-drag, do
+     not repaint", so the rail froze for good: dead sessions stayed listed and
+     no click could land. The window hears every release. */
+  addEventListener('pointermove', onDragMove)
+  addEventListener('pointerup', endDrag)
+  addEventListener('pointercancel', endDrag)
 }
 
 function onDragMove(e){
@@ -912,12 +928,15 @@ function layoutGap(){
 async function endDrag(e){
   if (!drag) return
   const d = drag; drag = null
-  d.el.onpointermove = d.el.onpointerup = d.el.onpointercancel = null
-  d.el.releasePointerCapture?.(e.pointerId)
+  removeEventListener('pointermove', onDragMove)
+  removeEventListener('pointerup', endDrag)
+  removeEventListener('pointercancel', endDrag)
+  if (d.el.isConnected) d.el.releasePointerCapture?.(e.pointerId)
   for (const r of d.rows) r.style.transform = ''
   d.el.classList.remove('drag-src')
   document.body.classList.remove('rail-dragging')
-  if (!d.moved){ dragId = null; return }            // it was a click after all
+  const owed = railOwed; railOwed = false
+  if (!d.moved){ dragId = null; if (owed) paintRail(); return }   // it was a click after all
   if (d.to === d.idx){ dragId = null; paintRail(); return }
 
   const next = sessions.slice()
@@ -1072,6 +1091,10 @@ function paintMeters(){
 
 function paintRail(){
   if (renaming) return          // a repaint mid-rename destroys the input you're typing in
+  /* …and one mid-PRESS swaps the row out from under the pointer: the press
+     lands on one element and the release on another, so the click never
+     fires. Owe it instead, and endDrag pays it the moment the press ends. */
+  if (drag){ railOwed = true; return }
   const box = $('slist'); box.innerHTML = ''
   for (const s of sessions){
     const a = activity.get(s.id) ?? {}
@@ -1134,7 +1157,9 @@ function paintRail(){
                        : 'branch this session (⌘⇧B)'
     br.onclick = e => {
       e.stopPropagation()
-      if (!brArmed){
+      // The LIVE state, not brArmed: a repaint can be deferred, so the ✓ on
+      // screen may outlive the 3s arm it was drawn for.
+      if (armedBranch !== s.id){
         armedBranch = s.id; armedKill = null; paintRail()
         clearTimeout(armTimer); armTimer = setTimeout(() => { armedKill = armedBranch = null; paintRail() }, 3000)
         return
