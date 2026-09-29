@@ -28,6 +28,9 @@ what exists; there is no session list to drift out of sync.
 - **A sound when a session needs you**, so you can leave it alone.
 - **Resume any past conversation from any folder** in two keystrokes, sorted by
   when you last actually spoke in it.
+- **Branch any session** — the branch button on a tab (click twice), or
+  ⌘⇧B, forks the conversation into a new tab right under it. The original is
+  never touched; press Esc Esc in the branch to rewind it further back.
 - **Context and rate-limit meters** — per-session context fill, plus your
   5-hour and weekly windows and when they reset. All read from Claude Code's
   own status-line data, never inferred.
@@ -83,6 +86,8 @@ error and runs the full test gate first.
 bash bin/reload.sh      # check, test, restart the host (safe from inside a session)
 node test/detect.test.mjs        # pane detection, against real captured panes
 node test/agentstate.test.mjs    # the hook-vs-pane state machine
+node test/branch.test.mjs        # branch labels, fork ids, rail placement
+bash test/e2e-branch.sh          # /branch against the running host
 node test/install-hooks.test.mjs # settings.json merging
 bash test/statusline.test.sh     # the status-line wrapper
 bash test/hook-script.test.sh    # the hook script itself
