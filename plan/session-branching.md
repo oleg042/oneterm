@@ -1,6 +1,6 @@
 # oneterm — branching a session
 
-Written 2026-09-29. Status: approved design, not yet built.
+Written 2026-09-29. Status: built.
 
 ---
 
