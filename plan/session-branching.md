@@ -102,6 +102,14 @@ leaves a half-made session behind.
   - `label` replaces the cwd-basename default.
 - `writeOrder(ids)` is extracted from `/reorder` (which sets
   `@oneterm_order = i * 10`) and used by both routes.
+- `readConversation` grows its head read (64 KB → 256 KB → 1 MB → 4 MB)
+  until it finds the cwd.
+  - **Measured 2026-09-29:** 16 of 170 real transcripts start with a first
+    prompt of 71–165 KB, which is the first line that carries a cwd. The fixed
+    64 KB read dropped that line as a fragment, so the conversation could not
+    be placed.
+  - Branching those conversations would have been refused, and they are
+    missing from the resume picker today. Both are fixed by the same change.
 
 ### `branch.mjs`: the pure parts
 
@@ -147,11 +155,12 @@ that ships.
 
 - `test/branch.test.mjs` covers the three pure functions and is added to
   `bin/reload.sh`'s gate.
-- One real fork (`claude -p --resume <id> --fork-session`) to record what
-  `--fork-session` writes to disk. If the forked file carries the parent's
-  `sessionId`, `readConversation` switches to preferring the filename too.
-  Without that, the resume picker would reopen the parent when you pick the
-  branch.
+- **Done 2026-09-29, before building:** one real fork
+  (`claude -p --resume <id> --fork-session`) to see what it writes. The forked
+  file is named after the new id, and **every line carries the new
+  `sessionId`**, including the copied history. The cwd is unchanged and the
+  original file is untouched. So the resume picker already resumes a branch as
+  itself, and `readConversation` needs no change.
 - End-to-end in the real app, on a second host on port 7332 run from this
   worktree:
   - arm, then confirm
