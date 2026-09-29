@@ -1160,9 +1160,15 @@ function paintRail(){
     x.title = armed ? 'click again to end this session' : 'end session'
     x.onclick = e => {
       e.stopPropagation()
-      // A Claude session holds hours of context and there is no undo once tmux
-      // kills it. One stray 12px click should not vaporise that.
-      if (s.cmd === 'claude' && !armed){
+      /* Two clicks for EVERY tab. This used to be Claude tabs only, on the
+         theory that a Claude session holds hours of context and a shell is
+         cheap — but a shell can be running a dev server, a build or an ssh
+         session, and killing it takes that and its scrollback with no undo.
+         It left the one destructive button as the only one that did not ask,
+         right next to a branch button that always does. One rule now: every
+         row button asks twice. Read live, like branch: a deferred repaint can
+         leave a ✓ on screen past its 3s arm. */
+      if (armedKill !== s.id){
         armedKill = s.id; armedBranch = null; paintRail()
         clearTimeout(armTimer); armTimer = setTimeout(() => { armedKill = armedBranch = null; paintRail() }, 3000)
         return
