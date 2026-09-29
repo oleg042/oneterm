@@ -80,6 +80,16 @@ if ! node "$DIR/test/branch.test.mjs" >/tmp/oneterm-branch.log 2>&1; then
 fi
 echo "  branching tests pass ($(grep -c '✓' /tmp/oneterm-branch.log) checks)"
 
+# The awake switch writes a sudoers rule. A rule that drifts from the commands
+# the host sends makes the switch ask for a password; a broader one is a hole.
+if ! node "$DIR/test/sleep.test.mjs" >/tmp/oneterm-sleep.log 2>&1; then
+  echo
+  echo "✗ awake switch tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-sleep.log | tail -25
+  exit 1
+fi
+echo "  awake switch tests pass ($(grep -c '✓' /tmp/oneterm-sleep.log) checks)"
+
 # The hook runs inside Claude Code's critical path on EVERY session on the
 # machine, so its failure modes matter more than its features. One of them —
 # draining stdin before gating — decides whether a big pasted prompt gives
