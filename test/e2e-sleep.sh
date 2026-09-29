@@ -40,6 +40,13 @@ WANT=$([ "$T" = 0 ] && echo false || echo true)
   || bad "GET /sleep/set was not refused"
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.example' "$B/sleep/set?on=1")" = 403 ] \
   && ok "a foreign Origin is refused (403)" || bad "a foreign Origin was not refused"
+# The setup route runs a command as root behind the password dialog. It is
+# never POSTed here — that would put a real dialog on screen — but it must be
+# exactly as unreachable from other pages as every other mutation.
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$B/sleep/setup")" = 405 ] \
+  && ok "GET /sleep/setup is refused (405)" || bad "GET /sleep/setup was not refused"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Origin: http://evil.example' "$B/sleep/setup")" = 403 ] \
+  && ok "…and a foreign Origin cannot reach it (403)" || bad "a foreign Origin reached /sleep/setup"
 R=$(curl -s -w ' %{http_code}' -X POST -H "$O" "$B/sleep/set?on=maybe")
 case "$R" in *bad_value*400) ok "anything but 0 or 1 is 400 bad_value" ;;
   *) bad "on=maybe: $R" ;; esac

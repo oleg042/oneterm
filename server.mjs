@@ -34,7 +34,8 @@ import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agent
 // pure, so test/branch.test.mjs runs the decisions that ship.
 import { branchLabel, conversationIdFromTranscript, orderAfter, CONV_ID } from './branch.mjs'
 // The awake switch: reading pmset, and the exact commands its sudoers rule allows.
-import { parseSleepDisabled, pmsetArgs, PMSET } from './sleep.mjs'
+import { parseSleepDisabled, pmsetArgs, PMSET, sudoersRule, rootInstallCommand, osascriptArgs } from './sleep.mjs'
+import { userInfo } from 'node:os'
 
 const execFileP = promisify(execFile)
 const ROOT = dirname(fileURLToPath(import.meta.url))
@@ -881,7 +882,7 @@ const ALLOWED_ORIGINS = new Set([
   `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`,
 ])
 const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop', '/clientlog',
-                           '/agent-event', '/branch', '/sleep/set'])
+                           '/agent-event', '/branch', '/sleep/set', '/sleep/setup'])
 
 function guard(req, res) {
   if (!LOCAL_HOST.test(req.headers.host || '')) {
@@ -1097,6 +1098,28 @@ async function route(req, res) {
     }
     console.log(`[sleep] disablesleep ${on}`)
     return json(res, { disabled: await readSleep() })
+  }
+  /* First-click setup: the macOS administrator dialog, then the sudoers rule
+   * installed as root. The dialog IS the consent — nothing is written unless
+   * you type your password into it — and the request simply stays open while
+   * it is on screen. The rule is for the account this host runs as. */
+  if (p === '/sleep/setup') {
+    let rule
+    try { rule = sudoersRule(userInfo().username) }
+    catch { return json(res, { error: 'setup_failed' }, 500) }
+    try {
+      await execFileP('/usr/bin/osascript', osascriptArgs(rootInstallCommand(rule),
+        'oneterm wants to let its awake switch keep this Mac running with the lid closed.'),
+        { timeout: 180_000 })
+    } catch (e) {
+      // -128 is AppleScript's "User canceled." — a choice, not a failure.
+      const cancelled = /-128|cancel/i.test(`${e?.stderr ?? ''}`)
+      if (!cancelled) console.error('[sleep] setup failed:', (e?.stderr || e?.message || '').trim())
+      return json(res, { error: cancelled ? 'setup_cancelled' : 'setup_failed',
+                         fix: join(ROOT, 'bin', 'install-sleep-switch.sh') }, cancelled ? 409 : 500)
+    }
+    console.log('[sleep] sudoers rule installed through the password dialog')
+    return json(res, { ok: true })
   }
 
   /* A branch: a new tab holding a copy of an existing one. A Claude tab is

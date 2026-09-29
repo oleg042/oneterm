@@ -33,8 +33,9 @@ what exists; there is no session list to drift out of sync.
   never touched; press Esc Esc in the branch to rewind it further back.
 - **An awake switch** — bottom-right of the rail. On, the Mac keeps running
   with the lid closed (`pmset -a disablesleep 1`), and the switch glows so it
-  is never on unnoticed. It needs root once: `bash bin/install-sleep-switch.sh`
-  adds a sudoers rule for exactly those two commands (`--uninstall` removes it).
+  is never on unnoticed. It needs root once: the first click shows the macOS
+  password dialog and adds a sudoers rule for exactly those two commands (or
+  run `bash bin/install-sleep-switch.sh`; `--uninstall` removes it).
 - **Context and rate-limit meters** — per-session context fill, plus your
   5-hour and weekly windows and when they reset. All read from Claude Code's
   own status-line data, never inferred.
