@@ -70,6 +70,16 @@ if ! node "$DIR/test/agentstate.test.mjs" >/tmp/oneterm-agentstate.log 2>&1; the
 fi
 echo "  agent-state tests pass ($(grep -c '✓' /tmp/oneterm-agentstate.log) checks)"
 
+# Branching decides a label that lands in the tmux row format and an id that
+# lands on a command line. Both are pure, so both are gated here.
+if ! node "$DIR/test/branch.test.mjs" >/tmp/oneterm-branch.log 2>&1; then
+  echo
+  echo "✗ branching tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-branch.log | tail -25
+  exit 1
+fi
+echo "  branching tests pass ($(grep -c '✓' /tmp/oneterm-branch.log) checks)"
+
 # The hook runs inside Claude Code's critical path on EVERY session on the
 # machine, so its failure modes matter more than its features. One of them —
 # draining stdin before gating — decides whether a big pasted prompt gives
