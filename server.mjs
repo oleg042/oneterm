@@ -30,6 +30,9 @@ import { classify, liveTail, LIVE_LINES, paneWindow } from './detect.mjs'
 // copy of it. This one has been wrong twice, so it is the last place to allow
 // a second implementation to drift.
 import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agentstate.mjs'
+// What a branch is called, which conversation it forks and where it lands —
+// pure, so test/branch.test.mjs runs the decisions that ship.
+import { branchLabel, conversationIdFromTranscript, orderAfter, CONV_ID } from './branch.mjs'
 
 const execFileP = promisify(execFile)
 const ROOT = dirname(fileURLToPath(import.meta.url))
@@ -415,7 +418,8 @@ async function annotateWaiting(list) {
  * unambiguously. The file states its cwd; use it. */
 const CLAUDE_PROJECTS = join(process.env.HOME, '.claude', 'projects')
 const CONV_LIMIT = 80          // a picker, not an archive
-const CONV_HEAD  = 64 * 1024   // metadata lives in the first few lines
+const CONV_HEAD  = 64 * 1024   // metadata lives in the first few lines…
+const CONV_HEAD_MAX = 4 * 1024 * 1024  // …grown ×4 up to this, see readConversation
 /* …but RECENCY lives at the other end, and not in the file's mtime.
  *
  * Sorting by mtime looked right for months and is wrong: Claude Code appends
@@ -435,24 +439,34 @@ async function readConversation(path, mtime) {
   let fh
   try {
     fh = await open(path, 'r')
-    const { buffer, bytesRead } = await fh.read(Buffer.alloc(CONV_HEAD), 0, CONV_HEAD, 0)
-    const head = buffer.subarray(0, bytesRead).toString('utf8')
+    /* The head GROWS until it holds a complete line with the cwd. A fixed 64KB
+       missed 16 of 170 real conversations on one machine: the first line that
+       carries a cwd is the first user message, and a pasted prompt made that
+       single line 71–165KB — cut off by the read, dropped as a fragment, and
+       the conversation could not be placed. It vanished from the resume
+       picker, and a branch of it was refused as "nothing to branch". Only a
+       file that has not yet produced id+cwd pays for a bigger read. */
     let cwd = null, title = null, id = null, firstUser = null
-    // The last line of a bounded read is usually truncated — drop it.
-    const lines = head.split('\n'); lines.pop()
-    for (const line of lines) {
-      let d; try { d = JSON.parse(line) } catch { continue }
-      id    ??= d.sessionId
-      cwd   ??= d.cwd
-      title ??= d.customTitle
-      if (!firstUser && d.type === 'user') {
-        const c = d.message?.content
-        const t = typeof c === 'string' ? c
-                : Array.isArray(c) ? c.filter(x => x?.type === 'text').map(x => x.text).join(' ')
-                : ''
-        if (t.trim()) firstUser = t.trim().replace(/\s+/g, ' ').slice(0, 120)
+    for (let size = CONV_HEAD; ; size *= 4) {
+      const { buffer, bytesRead } = await fh.read(Buffer.alloc(size), 0, size, 0)
+      // The last line of a bounded read is usually truncated — drop it.
+      const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n'); lines.pop()
+      // Re-scanning from the top on a bigger read is harmless: every field is ??=.
+      for (const line of lines) {
+        let d; try { d = JSON.parse(line) } catch { continue }
+        id    ??= d.sessionId
+        cwd   ??= d.cwd
+        title ??= d.customTitle
+        if (!firstUser && d.type === 'user') {
+          const c = d.message?.content
+          const t = typeof c === 'string' ? c
+                  : Array.isArray(c) ? c.filter(x => x?.type === 'text').map(x => x.text).join(' ')
+                  : ''
+          if (t.trim()) firstUser = t.trim().replace(/\s+/g, ' ').slice(0, 120)
+        }
+        if (id && cwd && title && firstUser) break
       }
-      if (id && cwd && title && firstUser) break
+      if ((id && cwd) || bytesRead < size || size >= CONV_HEAD_MAX) break
     }
     if (!id || !cwd) return null          // cannot resume what we cannot place
 
@@ -510,7 +524,7 @@ async function readConversations() {
   return data
 }
 
-async function createSession({ id, cmd, cwd, cols, rows, skip, resume }) {
+async function createSession({ id, cmd, cwd, cols, rows, skip, resume, fork, label }) {
   const name = PREFIX + id
   /* A resumed conversation is still a claude session; it just starts with
      --resume <id>. The id comes from the transcript's own sessionId, and the
@@ -519,6 +533,9 @@ async function createSession({ id, cmd, cwd, cols, rows, skip, resume }) {
   const claudeCmd = 'claude'
     + (skip ? ' --dangerously-skip-permissions' : '')
     + (resume ? ` --resume ${resume}` : '')
+    /* A BRANCH: the same conversation under a new session id, so the two tabs
+       diverge from here and neither writes into the other's transcript. */
+    + (resume && fork ? ' --fork-session' : '')
   /* A claude session must OUTLIVE claude.
    *
    * This used to be bare `claude`, which made the agent the tmux session's
@@ -578,8 +595,8 @@ async function createSession({ id, cmd, cwd, cols, rows, skip, resume }) {
               '-e', `ONETERM_PORT=${PORT}`,
               '-x', String(cols || 120), '-y', String(rows || 32),
               ...loginShell(inner)])
-  const label = cwd.split('/').filter(Boolean).pop() || '~'
-  await tmux(['set-option', '-t', name, '@oneterm_label', label])
+  const tabLabel = label || cwd.split('/').filter(Boolean).pop() || '~'
+  await tmux(['set-option', '-t', name, '@oneterm_label', tabLabel])
   await tmux(['set-option', '-t', name, '@oneterm_cwd', cwd])
   await tmux(['set-option', '-t', name, '@oneterm_cmd', cmd])
   // shells have no such flag — never stamp a session with a badge that lies
@@ -805,9 +822,16 @@ const TYPES = { '.html':'text/html', '.css':'text/css', '.js':'text/javascript',
                 '.json':'application/json', '.png':'image/png', '.svg':'image/svg+xml',
                 '.woff2':'font/woff2' }
 
-const json = (res, body) => {
-  res.writeHead(200, { 'content-type': 'application/json' })
+const json = (res, body, status = 200) => {
+  res.writeHead(status, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
+}
+
+/* The rail order is @oneterm_order on each session, spaced by ten. One writer,
+   so a drag and a branch cannot disagree about what the spacing means. */
+async function writeOrder(ids) {
+  for (let i = 0; i < ids.length; i++)
+    await tmux(['set-option', '-t', PREFIX + ids[i], '@oneterm_order', String(i * 10)])
 }
 
 const server = createServer(async (req, res) => {
@@ -832,7 +856,7 @@ const ALLOWED_ORIGINS = new Set([
   `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`,
 ])
 const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop', '/clientlog',
-                           '/agent-event'])
+                           '/agent-event', '/branch'])
 
 function guard(req, res) {
   if (!LOCAL_HOST.test(req.headers.host || '')) {
@@ -982,9 +1006,7 @@ async function route(req, res) {
     }
   }
   if (p === '/reorder') {
-    const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
-    for (let i = 0; i < ids.length; i++)
-      await tmux(['set-option', '-t', PREFIX + ids[i], '@oneterm_order', String(i * 10)])
+    await writeOrder((url.searchParams.get('ids') || '').split(',').filter(Boolean))
     return json(res, { ok: true })
   }
   if (p === '/rename') {
@@ -1020,13 +1042,50 @@ async function route(req, res) {
        shape Claude Code actually mints and nothing looser. Anything else here
        would be shell injection with extra steps. */
     const resume = q.get('resume')
-    if (resume && !/^[0-9a-fA-F-]{8,64}$/.test(resume)) {
+    if (resume && !CONV_ID.test(resume)) {
       res.writeHead(400, {'content-type':'application/json'})
       return res.end(JSON.stringify({ error: 'bad_resume_id' }))
     }
     await createSession({ id, cmd: q.get('cmd') || 'shell',
       cwd: q.get('cwd') || HOME, cols: Number(q.get('cols')), rows: Number(q.get('rows')),
       skip: q.get('skip') === '1', resume })
+    return json(res, { id })
+  }
+
+  /* A branch: a new tab holding a copy of an existing one. A Claude tab is
+   * forked — `claude --resume <id> --fork-session`, the conversation's own
+   * cwd, the parent's permission mode — and a shell tab gets a fresh shell in
+   * the same live folder. Every refusal happens BEFORE anything is created, so
+   * a failed branch never leaves a half-made tab in the rail. */
+  if (p === '/branch') {
+    const q = url.searchParams
+    const list = await listSessions()
+    const parent = list.find(s => s.id === q.get('id'))
+    if (!parent) return json(res, { error: 'no_such_session' }, 404)
+
+    let cwd = parent.cwd, resume = null
+    if (parent.cmd === 'claude') {
+      /* The hook stamps the transcript on every turn and on SessionStart —
+         including the one /clear fires — so this names the conversation the
+         tab is in NOW. The id comes from the filename and the cwd from the
+         file: `claude --resume` finds a conversation by its project folder,
+         so the tab's live path would be the wrong question. */
+      const transcript = hookState.get(parent.id)?.transcript
+      resume = conversationIdFromTranscript(transcript)
+      const conv = resume ? await readConversation(transcript, 0) : null
+      if (!conv) return json(res, { error: 'no_conversation' }, 409)
+      cwd = conv.cwd
+    }
+    if (!(await isDir(cwd))) return json(res, { error: 'no_such_directory', cwd }, 400)
+
+    const id = 's' + Date.now().toString(36)
+    await createSession({ id, cmd: parent.cmd, cwd,
+      cols: Number(q.get('cols')), rows: Number(q.get('rows')),
+      skip: parent.skip, resume, fork: true,
+      label: branchLabel(parent.label, list.map(s => s.label)) })
+    // createSession put it on top; a branch belongs under the tab it came from.
+    await writeOrder(orderAfter(list.map(s => s.id), parent.id, id))
+    console.log(`[branch] ${parent.id} -> ${id}` + (resume ? ` (fork of ${resume})` : ' (shell)'))
     return json(res, { id })
   }
 
