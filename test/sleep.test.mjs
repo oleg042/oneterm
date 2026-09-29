@@ -8,7 +8,9 @@ import { execFileSync } from 'node:child_process'
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseSleepDisabled, sudoersRule, pmsetArgs, PMSET } from '../sleep.mjs'
+import { parseSleepDisabled, sudoersRule, pmsetArgs, PMSET, SUDOERS_FILE,
+         rootInstallCommand, osascriptArgs } from '../sleep.mjs'
+import { readFileSync, statSync, existsSync, readdirSync } from 'node:fs'
 
 let pass = 0, fail = 0
 const ok  = m => { console.log(`  \x1b[32m✓\x1b[0m ${m}`); pass++ }
@@ -84,6 +86,64 @@ try {
   printed === sudoersRule(me) ? ok('the installer writes exactly this rule, for you')
                               : bad(`installer printed:\n${printed}`)
 } catch (e) { bad(`installer --print failed: ${e.stderr || e.message}`) }
+
+// ── first-click setup through the macOS password dialog ────────────────────
+/* The command the dialog runs AS ROOT. Run here for real — as you, into a temp
+   folder — so the test executes the exact shell text that ships. Only the
+   target and owner differ, and those are parameters for this reason. */
+const me = execFileSync('id', ['-un'], { encoding: 'utf8' }).trim()
+const myGroup = execFileSync('id', ['-gn'], { encoding: 'utf8' }).trim()
+const sh = (cmd) => { try { execFileSync('/bin/sh', ['-c', cmd], { stdio: 'pipe' }); return 0 } catch (e) { return e.status || 1 } }
+{
+  const d = mkdtempSync(join(tmpdir(), 'oneterm-sudoersd-'))
+  try {
+    const target = join(d, 'oneterm-sleep')
+    const good = sudoersRule(me)
+    eq(sh(rootInstallCommand(good, { target, owner: me, group: myGroup })), 0, 'the root command installs a valid rule')
+    eq(existsSync(target) && readFileSync(target, 'utf8'), good, '…byte for byte')
+    eq(existsSync(target) && (statSync(target).mode & 0o777).toString(8), '440', '…read-only, the mode sudo insists on')
+    eq(readdirSync(d), ['oneterm-sleep'], '…and leaves no staged file behind')
+
+    /* A rule that does not parse must never reach the live name: a broken file
+       in /etc/sudoers.d can lock sudo out of the whole machine. */
+    const t2 = join(d, 'other')
+    const code = sh(rootInstallCommand('this is not sudoers syntax\n', { target: t2, owner: me, group: myGroup }))
+    code !== 0 && !existsSync(t2) ? ok('a rule visudo rejects is not installed, and the command fails')
+                                  : bad(`broken rule: exit ${code}, installed=${existsSync(t2)}`)
+    eq(readdirSync(d).sort(), ['oneterm-sleep'], '…and its staged copy is cleaned up too')
+
+    // The rule reaches the shell quoted, so any character in it arrives intact.
+    const t3 = join(d, 'quoted')
+    const odd = "# it's \"quoted\" $HOME `id` \\ ;\n" + good
+    sh(rootInstallCommand(odd, { target: t3, owner: me, group: myGroup }))
+    eq(existsSync(t3) && readFileSync(t3, 'utf8'), odd, 'quotes, $, backticks and backslashes arrive as text, never as shell')
+  } finally { rmSync(d, { recursive: true, force: true }) }
+}
+rootInstallCommand('x\n').includes(`'${SUDOERS_FILE}'`) && rootInstallCommand('x\n').includes("chown 'root':'wheel'")
+  ? ok(`by default it installs ${SUDOERS_FILE}, owned root:wheel`) : bad('default target/owner')
+/* The staged copy has a dot in its name, which sudo skips in sudoers.d — so a
+   half-written file is never live, even for an instant. */
+rootInstallCommand('x\n').includes("/.oneterm-sleep.new'") ? ok('it stages under a dotted name sudo ignores')
+                                                          : bad('staged name')
+
+/* The AppleScript never contains the command or the rule: both travel as
+   separate arguments, so nothing in them can change what the script does. */
+const args = osascriptArgs('echo COMMAND', 'PROMPT TEXT')
+const script = args.filter((a, i) => args[i - 1] === '-e')
+script.join('\n').includes('with administrator privileges') ? ok('the dialog is the real macOS administrator prompt')
+                                                           : bad('no administrator privileges in the script')
+!script.join('\n').includes('COMMAND') && !script.join('\n').includes('PROMPT')
+  ? ok('the command and prompt are arguments, never spliced into the script') : bad('data spliced into the AppleScript')
+eq(args.slice(-2), ['echo COMMAND', 'PROMPT TEXT'], '…passed last, as argv')
+{
+  const d = mkdtempSync(join(tmpdir(), 'oneterm-osa-'))
+  try {
+    // Compile without running: proves the AppleScript parses, with no dialog.
+    execFileSync('/usr/bin/osacompile', [...script.flatMap(l => ['-e', l]), '-o', join(d, 's.scpt')], { stdio: 'pipe' })
+    ok('osacompile accepts the script')
+  } catch (e) { bad(`osacompile rejects the script: ${e.stderr}`) }
+  finally { rmSync(d, { recursive: true, force: true }) }
+}
 
 console.log(`\n  ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

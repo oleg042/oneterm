@@ -39,3 +39,48 @@ export function sudoersRule(user) {
          '# Remove with: bash bin/install-sleep-switch.sh --uninstall\n' +
          `${user} ALL=(root) NOPASSWD: ${cmd(false)}, ${cmd(true)}\n`
 }
+
+/* ── setting it up from the switch itself ─────────────────────────────────
+   The first click with no rule installed asks macOS for your password — the
+   standard administrator dialog — and runs rootInstallCommand as root. No
+   terminal, no copy-paste. */
+
+const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`
+
+/**
+ * The shell command the dialog runs AS ROOT to install `rule`.
+ *
+ * The rule travels INSIDE the command, quoted — never through a temp file.
+ * A file you own could be swapped by any process running as you while the
+ * password dialog sits open, and root would then install whatever it found:
+ * "ALL=(ALL) NOPASSWD: ALL" by the back door. It is staged under a dotted
+ * name, which sudo skips in sudoers.d, checked by visudo, and only then moved
+ * into place — so a broken file, which can lock sudo out of the whole
+ * machine, never goes live even for an instant.
+ *
+ * target/owner/group exist so the test can run this exact text unprivileged.
+ */
+export function rootInstallCommand(rule, { target = SUDOERS_FILE, owner = 'root', group = 'wheel' } = {}) {
+  const staged = target.replace(/[^/]+$/, name => `.${name}.new`)
+  return [
+    'umask 077',
+    `printf '%s' ${shq(rule)} > ${shq(staged)}`,
+    `/usr/sbin/chown ${shq(owner)}:${shq(group)} ${shq(staged)}`,
+    `/bin/chmod 0440 ${shq(staged)}`,
+    `/usr/sbin/visudo -c -f ${shq(staged)} >/dev/null`,
+    `/bin/mv -f ${shq(staged)} ${shq(target)}`,
+  ].join(' && ') + ` || { /bin/rm -f ${shq(staged)}; exit 1; }`
+}
+
+/**
+ * osascript arguments that run `command` as root behind the macOS
+ * administrator password dialog. The command and prompt are ARGUMENTS, read
+ * with `item N of argv` — nothing is spliced into the AppleScript text, so
+ * nothing in them can change what the script does.
+ */
+export function osascriptArgs(command, prompt) {
+  return ['-e', 'on run argv',
+          '-e', 'do shell script (item 1 of argv) with prompt (item 2 of argv) with administrator privileges',
+          '-e', 'end run',
+          command, prompt]
+}
