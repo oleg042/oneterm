@@ -77,5 +77,12 @@
   "waiting": false,
   "why": "THE WIDE-PANE TRUNCATION BUG. 191 columns, 50 lines, and a queued-message block that pushes the live spinner 25 lines off the bottom. Under the old .slice(-2000) the window was ten lines and the marker sat 2,506 characters from the end, so the session read idle while it ran for six minutes. It also defeated the hook: the hook said working, the truncated pane disagreed past MISSED_STOP_MS, and the missed-Stop fallback believed the pane. Three lines above the real spinner is '\u2026 writes \u2026 (5m 48s \u00b7 2 lines)', a FINISHED tool call, so this fixture pins both halves \u2014 the window must be wide enough to reach the real marker, and the pattern must refuse the fake one.",
   "working": true
+ },
+ "status2_spin0_prose_still_working_prompt0.pane": {
+  "bg": false,
+  "fg": false,
+  "waiting": false,
+  "why": "IDLE. The turn ended ('Cogitated for 2m 35s \u00b7 done'), there is no spinner line, and the prompt holds typed but unsent text. The only 'still working' on screen is Claude's own PROSE near the top ('asks first if Claude is still working in it'). An unanchored /still (thinking|working)/ matched that sentence and flapped the session work 0->1 against the hook's Stop for as long as it stayed on screen. Captured from a live session, content scrubbed, layout kept.",
+  "working": false
  }
 }

@@ -1,0 +1,26 @@
+  - UI: the list of open tabs lives in localStorage so it survives a reload. Which tab is focused lives in sessionStorage, so two browser
+    windows don't switch each other.
+  - Controls: ＋ opens a picker. ✕ closes a tab and asks first if Claude is still working in it. Keyboard shortcuts: ⌘W and ⌘1–9.
+  - Opening another item's view (from search or the command palette) opens or focuses that item's tab instead of taking over the one
+    you're in.
+  - Terminal: its strip already follows switches (Panel.tsx:162-175), so it just follows the focused tab.
+  - The key change: lock each session to its tab. The live nav would only say what you're looking at; it would never decide where things
+    land. Context would be stored per tab, not per user.
+  - Migration: one table gets re-keyed, which means a full regression run.
+  - The test that matters: a session locked to tab A still writes to A while you focus tab B.
+
+  Rough size: one block covering the UI, the server and one migration.
+
+  One question before I go further: is a tab one item, or can you open several tabs for the same item, side by side, each with its own
+  session? Both work. Several per item means locking to the tab instead of the item, which is a bit more work.
+
+✻ Cogitated for 2m 35s · done 11:09 PM
+
+※ recap: You want tabs inside the app so several setups can run at once, and I've sketched a design that locks each session to its own
+  tab. Next step: tell me whether one item can have several tabs open, or just one. (disable recaps in /config)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ several per item, go with A
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  /Users/dev/Projects/app | Opus 5.5 | █░░░░░░░░░ 10%
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 6 agents

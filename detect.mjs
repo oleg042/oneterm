@@ -62,7 +62,15 @@ export const WAITING = [
  * These are matched against the WHOLE tail. */
 export const WORKING = [
   /esc to interrupt/i,
-  /still (thinking|working)/i,
+  /* /still (thinking|working)/i was here and had to go: it is PROSE, not a
+   * marker. It was the last unanchored pattern in this list, matched anywhere
+   * in the tail, and no captured pane ever showed Claude Code drawing it as
+   * status — the binary uses "Still working." for a phone check-in and the
+   * rest are phrases people TYPE. What it did match was an answer that said
+   * "asks first if Claude is still working in it": that sentence sitting on
+   * screen flapped an idle session work 0->1 against the hook's Stop every
+   * poll. A live turn is already caught by the anchored spinner shapes below.
+   * Fixture: status2_spin0_prose_still_working_prompt0.pane. */
   /* The elapsed timer is multi-unit once a run passes a minute — "(3m 9s ·" —
    * so a \(\d+s pattern stops matching exactly when a run is long enough to
    * care about.
