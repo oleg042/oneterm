@@ -33,6 +33,8 @@ import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agent
 // What a branch is called, which conversation it forks and where it lands —
 // pure, so test/branch.test.mjs runs the decisions that ship.
 import { branchLabel, conversationIdFromTranscript, orderAfter, CONV_ID } from './branch.mjs'
+// The awake switch: reading pmset, and the exact commands its sudoers rule allows.
+import { parseSleepDisabled, pmsetArgs, PMSET } from './sleep.mjs'
 
 const execFileP = promisify(execFile)
 const ROOT = dirname(fileURLToPath(import.meta.url))
@@ -844,6 +846,12 @@ const json = (res, body, status = 200) => {
   res.end(JSON.stringify(body))
 }
 
+/** true = the Mac stays awake (lid closed too), false = it may sleep, null = unknown. */
+async function readSleep() {
+  try { return parseSleepDisabled((await execFileP(PMSET, ['-g'], { timeout: 5_000 })).stdout) }
+  catch { return null }
+}
+
 /* The rail order is @oneterm_order on each session, spaced by ten. One writer,
    so a drag and a branch cannot disagree about what the spacing means. */
 async function writeOrder(ids) {
@@ -873,7 +881,7 @@ const ALLOWED_ORIGINS = new Set([
   `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, `http://[::1]:${PORT}`,
 ])
 const MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/drop', '/clientlog',
-                           '/agent-event', '/branch'])
+                           '/agent-event', '/branch', '/sleep/set'])
 
 function guard(req, res) {
   if (!LOCAL_HOST.test(req.headers.host || '')) {
@@ -1067,6 +1075,28 @@ async function route(req, res) {
       cwd: q.get('cwd') || HOME, cols: Number(q.get('cols')), rows: Number(q.get('rows')),
       skip: q.get('skip') === '1', resume })
     return json(res, { id })
+  }
+
+  /* The awake switch. The state is READ from pmset on every ask, never kept
+   * here: the host owns nothing, and a flip made in a terminal has to show up
+   * in the rail rather than be contradicted by it. */
+  if (p === '/sleep') return json(res, { disabled: await readSleep() })
+  if (p === '/sleep/set') {
+    const on = url.searchParams.get('on')
+    if (on !== '0' && on !== '1') return json(res, { error: 'bad_value' }, 400)
+    try {
+      /* -n: never prompt. Without the sudoers rule sudo would otherwise sit
+         waiting for a password nobody can type, holding this request open. */
+      await execFileP('/usr/bin/sudo', ['-n', PMSET, ...pmsetArgs(on === '1')], { timeout: 10_000 })
+    } catch (e) {
+      const setup = /password is required|not allowed|a terminal is required/i.test(e?.stderr ?? '')
+      if (!setup) console.error('[sleep] pmset failed:', (e?.stderr || e?.message || '').trim())
+      return json(res, { error: setup ? 'needs_setup' : 'pmset_failed',
+                         fix: join(ROOT, 'bin', 'install-sleep-switch.sh'),
+                         disabled: await readSleep() }, setup ? 409 : 500)
+    }
+    console.log(`[sleep] disablesleep ${on}`)
+    return json(res, { disabled: await readSleep() })
   }
 
   /* A branch: a new tab holding a copy of an existing one. A Claude tab is
