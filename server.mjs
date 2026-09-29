@@ -476,21 +476,38 @@ async function readConversation(path, mtime) {
        writes on its own schedule, which is exactly what made every row show
        the same age. Falls back to mtime when the tail holds no complete
        message — wrong in the old way, rather than missing. */
+    /* …and which folder does it live in NOW? Usually the first cwd. But a
+       conversation that moved into a worktree mid-session keeps its first cwd
+       in the head, while a `relocated` record, every later line, and the
+       project folder the transcript is filed under all say the worktree.
+       Resuming or branching it in the first cwd put the agent in the MAIN
+       checkout — editing it while the conversation believed it was in a
+       worktree. The project folder decides, because it is where Claude Code
+       filed this file: the path with every non-alphanumeric turned into '-'.
+       Not simply "the newest cwd", which a Bash `cd` can move. */
+    const folder = basename(dirname(path))
+    const filedUnder = p => typeof p === 'string' && p.replace(/[^A-Za-z0-9]/g, '-') === folder
+    const needHome = !filedUnder(cwd)
+    let home = null
+
     const size = (await fh.stat()).size
     const tailStart = Math.max(0, size - CONV_TAIL)
-    let at = mtime
+    let at = mtime, dated = false
     if (size > 0) {
       const t = await fh.read(Buffer.alloc(Math.min(CONV_TAIL, size)), 0,
                               Math.min(CONV_TAIL, size), tailStart)
       const tailLines = t.buffer.subarray(0, t.bytesRead).toString('utf8').split('\n')
       if (tailStart > 0) tailLines.shift()     // first line of a mid-file read is a fragment
-      for (let i = tailLines.length - 1; i >= 0; i--) {
+      for (let i = tailLines.length - 1; i >= 0 && !(dated && (home || !needHome)); i--) {
         let d; try { d = JSON.parse(tailLines[i]) } catch { continue }
-        if (d.type !== 'user' && d.type !== 'assistant') continue
+        if (needHome && !home && filedUnder(d.relocatedCwd ?? d.cwd)) home = d.relocatedCwd ?? d.cwd
+        if (dated || (d.type !== 'user' && d.type !== 'assistant')) continue
         const ts = Date.parse(d.timestamp ?? '')
-        if (Number.isFinite(ts)) { at = ts; break }
+        if (Number.isFinite(ts)) { at = ts; dated = true }
       }
     }
+    // Only while it exists: a removed worktree sends it back to where it began.
+    if (home && await isDir(home)) cwd = home
     return { id, cwd, title: title || firstUser || basename(cwd), preview: firstUser || '', at }
   } catch { return null }
   finally { await fh?.close().catch(() => {}) }

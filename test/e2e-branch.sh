@@ -156,6 +156,32 @@ case "$("$TMUX_BIN" display-message -p -t "oneterm_$H" '#{pane_start_command}' 2
   *"--resume $U2 --fork-session"*) ok "…and it forks the conversation the tab is in NOW (the hook's latest)" ;;
   *) bad "big-prompt branch forked the wrong conversation" ;; esac
 
+# ── a conversation that moved into a worktree mid-session ──────────────────
+# Its FIRST cwd is where it started; a `relocated` record and every later line
+# carry the worktree, and Claude Code files the transcript under the WORKTREE's
+# project folder (the path with every non-alphanumeric turned into '-'). The
+# record shapes below are copied from a real relocated transcript. Forking it in
+# its first cwd would put the branch in the main checkout — editing main while
+# the conversation believes it is in a worktree.
+mkdir -p "$TMP/wt"
+U3=$(uuidgen | tr 'A-Z' 'a-z')
+PROJ="$TMP/$(printf '%s' "$TMP/wt" | sed 's/[^A-Za-z0-9]/-/g')"
+mkdir -p "$PROJ"
+{
+  printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"start"},"timestamp":"2026-09-29T00:00:00Z"}\n' "$U3" "$TMP/work"
+  printf '{"type":"relocated","sessionId":"%s","relocatedCwd":"%s"}\n' "$U3" "$TMP/wt"
+  printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"later"},"timestamp":"2026-09-29T00:01:00Z"}\n' "$U3" "$TMP/wt"
+} > "$PROJ/$U3.jsonl"
+curl -s -X POST --data "{\"id\":\"$Q\",\"action\":\"session\",\"claudeSession\":\"$U3\",\"transcript\":\"$PROJ/$U3.jsonl\"}" \
+  "$B/agent-event" >/dev/null
+W=$(post "branch?id=$Q" | idof); [ -n "$W" ] && MADE+=("$W")
+[ "$(opt "$W" @oneterm_cwd)" = "$TMP/wt" ] && ok "a conversation that moved into a worktree is branched IN the worktree" \
+  || bad "relocated conversation branched in: $(opt "$W" @oneterm_cwd)"
+rm -rf "$TMP/wt"
+W2=$(post "branch?id=$Q" | idof); [ -n "$W2" ] && MADE+=("$W2")
+[ "$(opt "$W2" @oneterm_cwd)" = "$TMP/work" ] && ok "…and where it started, once that worktree is gone" \
+  || bad "relocated-then-removed branched in: $(opt "$W2" @oneterm_cwd)"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
