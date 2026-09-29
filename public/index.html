@@ -1126,7 +1126,14 @@ function paintRail(){
       if (e.key === 'F2'){ e.preventDefault(); startRename(el, s) }
     }
     // dblclick anywhere in the row, not just on the ~90px name
-    el.ondblclick = e => { e.preventDefault(); e.stopPropagation(); startRename(el, s) }
+    el.ondblclick = e => {
+      /* Not from the row's buttons. "Click twice" is a double-click to the
+         hand, and Chrome counts clicks by the OS, not per element — so
+         confirming a branch also fired dblclick, which bubbled here and opened
+         a rename, and renaming made refresh() skip the new tab entirely. */
+      if (e.target.closest('.br, .x')) return
+      e.preventDefault(); e.stopPropagation(); startRename(el, s)
+    }
     el.dataset.id = s.id
     el.onpointerdown = e => beginDrag(e, el, s.id)
     const x = document.createElement('span')
@@ -1271,7 +1278,12 @@ async function branchSession(id, { newTab = false } = {}){
       if (!window.open(url, '_blank')) toast('branched — the browser blocked the new tab, so it is in the rail', 4200)
       return
     }
-    active = r.id; localStorage.setItem('oneterm-active', r.id); writeHash(r.id)
+    /* The hash is written from the id the host returned, not through
+       writeHash: that looks the id up in `sessions`, and refresh() can decline
+       to run (mid-rename, mid-drag) and leave the branch out of it — which
+       left the address bar, and any link copied from it, on the parent. */
+    active = r.id; localStorage.setItem('oneterm-active', r.id)
+    history.replaceState(null, '', '#' + encodeURIComponent(r.id))
     paintRail(); connect(r.id)
   } finally { branching = false }
 }
