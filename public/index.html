@@ -194,6 +194,22 @@ body.rail-dragging .sess{user-select:none}
   transition:background var(--sp) var(--ease),color var(--sp) var(--ease),opacity var(--sp)}
 .ico:hover{background:var(--raise);color:var(--ink)}
 .ico.muted{opacity:.35}
+/* The awake switch, bottom-right of the rail. OFF is exactly as quiet as the
+   icons beside it. ON is the loudest thing in the rail on purpose: a closed
+   MacBook that will not sleep gets hot in a bag and drains its battery, so it
+   must never be on without you noticing. */
+.awake{margin-left:auto;margin-right:8px;align-self:center;height:24px;padding:0 10px 0 9px;
+  display:flex;align-items:center;gap:7px;border-radius:99px;border:1px solid var(--line2);
+  color:var(--faint);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  transition:background var(--sp) var(--ease),color var(--sp) var(--ease),border-color var(--sp) var(--ease)}
+.awake i{width:6px;height:6px;border-radius:99px;border:1.5px solid currentColor;box-sizing:border-box}
+.awake:hover{background:var(--raise);color:var(--ink)}
+.awake.on{background:var(--accent);border-color:var(--accent);color:var(--sink);font-weight:600;
+  animation:awakeGlow 2.4s ease-in-out infinite}
+.awake.on i{background:currentColor}
+.awake.on:hover{background:var(--accent);color:var(--sink)}
+.awake.busy{opacity:.6;cursor:progress}
+@keyframes awakeGlow{0%,100%{box-shadow:0 0 0 2px var(--accent-soft)}50%{box-shadow:0 0 0 6px var(--accent-soft)}}
 .railbtn{display:flex;align-items:center;gap:10px;padding:6px 12px;border-radius:var(--r);
   color:var(--muted);font-size:12.5px;
   transition:background var(--sp) var(--ease),color var(--sp) var(--ease)}
@@ -389,6 +405,7 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
     <div class="iconrow">
       <button class="ico" id="themeBtn" title="Light / dark">&#9680;</button>
       <button class="ico" id="soundBtn" title="Sound">&#9834;</button>
+      <button class="awake" id="awakeBtn" hidden><i></i><span>awake</span></button>
     </div>
   </div>
 </aside>
@@ -1587,6 +1604,44 @@ $('soundBtn').onclick = () => {
   if (soundOn) soundDone()                 // hear that it works, don't guess
 }
 paintSound()
+
+/* ── awake: keep the Mac running with the lid closed ─────────────────────
+   `pmset -a disablesleep`, flipped by the host. The state is READ from pmset
+   on every poll and never remembered here, so a flip made in a terminal shows
+   up within seconds and the switch cannot claim something the Mac is not
+   doing. Hidden until the host reports a state — null means it cannot tell. */
+let awake = null, awakeBusy = false
+function paintAwake(){
+  const b = $('awakeBtn')
+  b.hidden = awake === null
+  b.classList.toggle('on', awake === true)
+  b.title = awake ? 'Stays awake with the lid closed — click to let it sleep again'
+                  : 'Click to keep this Mac awake with the lid closed'
+}
+async function refreshAwake(){
+  if (awakeBusy) return                     // a flip in flight owns the state
+  const r = await api('/sleep')
+  if (!r || r.disabled === awake) return
+  awake = r.disabled; paintAwake()
+}
+$('awakeBtn').onclick = async () => {
+  if (awakeBusy || awake === null) return
+  awakeBusy = true; $('awakeBtn').classList.add('busy')
+  try {
+    const r = await post('/sleep/set?on=' + (awake ? 0 : 1))
+    /* No sudoers rule yet: say exactly what fixes it. The host refuses at
+       once instead of waiting on a password prompt nobody can answer. */
+    if (r?.error === 'needs_setup')
+      toast('one-time setup — in a shell tab run:  bash ' + tilde(r.fix), 12000)
+    else if (!r || r.error) toast("couldn't change the sleep setting", 4200)
+    // Whatever happened, show what pmset now says, not what was asked for.
+    if (typeof r?.disabled === 'boolean') awake = r.disabled
+    paintAwake()
+  } finally { awakeBusy = false; $('awakeBtn').classList.remove('busy') }
+}
+setInterval(refreshAwake, 5000)
+addEventListener('focus', refreshAwake)
+refreshAwake()
 
 $('newBtn').onclick = () => showSheet('new')
 $('skillsBtn').onclick   = () => showSheet('palette', 'skill')

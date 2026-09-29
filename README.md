@@ -31,6 +31,10 @@ what exists; there is no session list to drift out of sync.
 - **Branch any session** — the branch button on a tab (click twice), or
   ⌘⇧B, forks the conversation into a new tab right under it. The original is
   never touched; press Esc Esc in the branch to rewind it further back.
+- **An awake switch** — bottom-right of the rail. On, the Mac keeps running
+  with the lid closed (`pmset -a disablesleep 1`), and the switch glows so it
+  is never on unnoticed. It needs root once: `bash bin/install-sleep-switch.sh`
+  adds a sudoers rule for exactly those two commands (`--uninstall` removes it).
 - **Context and rate-limit meters** — per-session context fill, plus your
   5-hour and weekly windows and when they reset. All read from Claude Code's
   own status-line data, never inferred.
@@ -88,6 +92,8 @@ node test/detect.test.mjs        # pane detection, against real captured panes
 node test/agentstate.test.mjs    # the hook-vs-pane state machine
 node test/branch.test.mjs        # branch labels, fork ids, rail placement
 bash test/e2e-branch.sh          # /branch against the running host
+node test/sleep.test.mjs         # the awake switch's pmset parsing and sudoers rule
+bash test/e2e-sleep.sh           # /sleep against the running host (never changes it)
 node test/install-hooks.test.mjs # settings.json merging
 bash test/statusline.test.sh     # the status-line wrapper
 bash test/hook-script.test.sh    # the hook script itself
