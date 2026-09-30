@@ -34,5 +34,12 @@ jobs:
       - name: status line wrapper
         run: bash test/statusline.test.sh
 
+      - name: branching (labels, fork ids, rail placement)
+        run: node test/branch.test.mjs
+
+      # sleep.test.mjs, clipboard.test.mjs and fallback-shell.test.sh are gated
+      # in bin/reload.sh instead: they need macOS (visudo, osacompile) or tmux
+      # with a compiled node-pty, which this runner installs with scripts off.
+
       # e2e-hook.sh is deliberately absent: it needs a running host, tmux and a
       # real Claude Code turn, so it stays a local-only check.

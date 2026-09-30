@@ -90,6 +90,27 @@ if ! node "$DIR/test/sleep.test.mjs" >/tmp/oneterm-sleep.log 2>&1; then
 fi
 echo "  awake switch tests pass ($(grep -c '✓' /tmp/oneterm-sleep.log) checks)"
 
+# The clipboard path is silent when it breaks — a drag just quietly copies
+# nothing — and its set-clipboard mode is a security setting: 'on' would let
+# any program in a pane write your clipboard. Both are proved on the wire.
+if ! node "$DIR/test/clipboard.test.mjs" >/tmp/oneterm-clipboard.log 2>&1; then
+  echo
+  echo "✗ clipboard tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-clipboard.log | tail -25
+  exit 1
+fi
+echo "  clipboard tests pass ($(grep -c '✓' /tmp/oneterm-clipboard.log) checks)"
+
+# What a session runs after claude exits. A regression here types escape codes
+# into your shell on every mouse move.
+if ! bash "$DIR/test/fallback-shell.test.sh" >/tmp/oneterm-fallback.log 2>&1; then
+  echo
+  echo "✗ fallback shell tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-fallback.log | tail -20
+  exit 1
+fi
+echo "  fallback shell tests pass ($(grep -c '✓' /tmp/oneterm-fallback.log) checks)"
+
 # The hook runs inside Claude Code's critical path on EVERY session on the
 # machine, so its failure modes matter more than its features. One of them —
 # draining stdin before gating — decides whether a big pasted prompt gives
