@@ -932,6 +932,11 @@ function beginDrag(e, el, id){
 
 function onDragMove(e){
   if (!drag) return
+  /* No button held means the press already ended — released OUTSIDE the
+     window, where no pointerup reaches the page once a mid-press repaint has
+     cost the row its capture. Without this the drag stayed open and every
+     repaint stayed owed, so the rail froze until the next click. */
+  if (e.buttons === 0){ endDrag(e); return }
   const dy = e.clientY - drag.startY
   if (!drag.moved){
     if (Math.abs(dy) < DRAG_THRESHOLD) return      // still a click, not a drag
@@ -965,7 +970,11 @@ async function endDrag(e){
   removeEventListener('pointermove', onDragMove)
   removeEventListener('pointerup', endDrag)
   removeEventListener('pointercancel', endDrag)
-  if (d.el.isConnected) d.el.releasePointerCapture?.(e.pointerId)
+  /* Best effort: releasePointerCapture THROWS for a pointer id that is not
+     active, and a throw here stopped endDrag halfway — drag cleared but dragId
+     left set, which is the frozen-rail state all over again. This is the only
+     place that state gets cleared, so nothing in it may abort. */
+  if (d.el.isConnected) try { d.el.releasePointerCapture?.(e.pointerId) } catch {}
   for (const r of d.rows) r.style.transform = ''
   d.el.classList.remove('drag-src')
   document.body.classList.remove('rail-dragging')
