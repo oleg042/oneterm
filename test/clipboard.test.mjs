@@ -26,10 +26,16 @@ console.log('\noneterm clipboard (OSC 52)\n')
 // The host must ask for it in both places, or a session born before the change
 // never gets it and one born after silently loses it on the next refactor.
 const src = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
-src.includes("'set-option', '-t', name, 'set-clipboard', 'on'")
-  ? ok('createSession turns set-clipboard on') : bad('createSession turns set-clipboard on')
-src.includes("'set-option', '-s', 'set-clipboard', 'on'")
-  ? ok('the boot stamp turns it on for servers already up') : bad('the boot stamp turns it on for servers already up')
+/* 'external', not 'on'. Both forward tmux's OWN copy to the terminal, which is
+   all a drag needs; 'on' also forwards OSC 52 printed by any PROGRAM in the
+   pane — so `cat` of an untrusted file, or a package's postinstall, could
+   silently replace your clipboard with a command you later paste. The wire
+   test below proves both halves against whatever mode the host really sets. */
+src.includes("'set-option', '-t', name, 'set-clipboard', 'external'")
+  ? ok("createSession sets set-clipboard external") : bad("createSession sets set-clipboard external")
+src.includes("'set-option', '-s', 'set-clipboard', 'external'")
+  ? ok('the boot stamp sets it for servers already up') : bad('the boot stamp sets it for servers already up')
+const MODE = src.match(/'set-option', '-s', 'set-clipboard', '(\w+)'/)?.[1] ?? 'unset'
 
 const page = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 page.includes('registerOscHandler(52')
@@ -79,11 +85,11 @@ try {
     ? ok('…while the text sits in a tmux buffer nobody can read — the bug')
     : bad('the copy did not happen at all (test is broken, not the code)')
 
-  tmux('set-option', '-s', 'set-clipboard', 'on')
+  tmux('set-option', '-s', 'set-clipboard', MODE)
   const out = await dragCopy()
   const m = out.match(/\x1b\]52;[^;]*;([A-Za-z0-9+/=]+)/)
-  m ? ok('with set-clipboard on, the same drag-copy emits OSC 52')
-    : bad('with set-clipboard on, the same drag-copy emits OSC 52')
+  m ? ok(`with set-clipboard ${MODE} (what the host sets), the same drag-copy emits OSC 52`)
+    : bad(`with set-clipboard ${MODE} (what the host sets), the same drag-copy emits OSC 52`)
   if (m) {
     /* The page decodes base64 -> bytes -> UTF-8. Do the same here: reading
        those bytes as latin-1 instead is exactly the mojibake that turns
@@ -93,6 +99,24 @@ try {
       ? ok('the bytes survive base64 and a UTF-8 decode intact')
       : bad(`payload corrupted: ${JSON.stringify(decoded.slice(0, 60))}`)
   }
+
+  /* The other half: a PROGRAM printing OSC 52 must not reach the client, or
+     anything that writes to the pane can write your clipboard. "ZXZpbA==" is
+     "evil". The real sequence starts with an ESC byte — a command line that
+     merely echoes the text "\033]52;…" must not count as a hit. */
+  const programWrites = async (mode) => {
+    tmux('set-option', '-s', 'set-clipboard', mode)
+    grab()
+    tmux('new-window', '-t', 'c', "sleep 0.3; printf '\\033]52;c;ZXZpbA==\\a'; sleep 30")
+    await sleep(900)
+    return /\x1b\]52;[^\x07\x1b]*ZXZpbA==/.test(grab())
+  }
+  ;(await programWrites('on'))
+    ? ok("control: under 'on' a program's OSC 52 does reach the client (the check can see it)")
+    : bad("control failed: under 'on' a program's OSC 52 did not arrive — the check is blind")
+  ;(await programWrites(MODE))
+    ? bad(`under ${MODE} (what the host sets), a PROGRAM can still write your clipboard`)
+    : ok(`under ${MODE} (what the host sets), a program's OSC 52 never reaches the clipboard`)
 } finally {
   try { term?.kill() } catch {}
   try { tmux('kill-server') } catch {}

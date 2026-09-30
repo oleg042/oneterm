@@ -708,10 +708,17 @@ const TTY_RESET = "stty sane 2>/dev/null; printf '\\033[?1000l\\033[?1002l\\033[
    * where the text was going. set-clipboard makes that same copy also emit
    * OSC 52, which the page turns into a real clipboard write.
    *
+   * EXTERNAL, not on. Both forward tmux's own copy, which is all a drag needs.
+   * 'on' also forwards OSC 52 that any PROGRAM prints — measured: a printf in
+   * the pane reached the page and would have replaced the system clipboard.
+   * So `cat` of an untrusted file, or a package's postinstall script, could
+   * plant a command there for you to paste later. test/clipboard.test.mjs
+   * proves both halves on the wire.
+   *
    * It reads as a session option but tmux routes it to the SERVER, so setting
    * it per session is idempotent rather than wasteful — and it means a session
    * born before this existed gets it the moment any new one is created. */
-  await tmux(['set-option', '-t', name, 'set-clipboard', 'on'])
+  await tmux(['set-option', '-t', name, 'set-clipboard', 'external'])
   await tmux(['set-option', '-t', name, 'history-limit', '50000'])
   // tmux() swallows failures, so without this /new could hand back an id for a
   // session that was never created and the client would attach to nothing.
@@ -1426,8 +1433,9 @@ async function stampServerDefaults() {
   if (!(await tmux(['list-sessions'])).trim()) return
   await tmux(['set-environment', '-g', 'LANG', LOCALE])
   await tmux(['set-environment', '-g', 'LC_ALL', LOCALE])
-  // Server-scoped, so the sessions that already exist get it too.
-  await tmux(['set-option', '-s', 'set-clipboard', 'on'])
+  // Server-scoped, so the sessions that already exist get it too. External,
+  // not on — see createSession: 'on' lets any program write your clipboard.
+  await tmux(['set-option', '-s', 'set-clipboard', 'external'])
 }
 
 server.listen(PORT, '127.0.0.1', async () => {
