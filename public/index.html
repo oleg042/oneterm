@@ -732,6 +732,22 @@ addEventListener('resize', scheduleResize)
    66/67 horizontal; clicks, drags and motion are left alone. */
 const WHEEL_REPORT = /^\x1b\[<6[4-7];\d+;\d+[Mm]$/
 const MOUSE_REPORT = /^\x1b\[<\d+;\d+;\d+[Mm]$/
+/* …but not for a TRACKPAD. xterm sends one report per wheel EVENT, whatever
+   its size. A mouse notch is one isolated event; a trackpad swipe is a burst —
+   measured on a real Mac: 7–19 events about 30 ms apart per swipe, plus the
+   momentum after the fingers lift. Doubling every event of a burst made a
+   small swipe fly past hundreds of lines. So an event arriving within
+   WHEEL_BURST_MS of the previous one is part of a burst and is sent once; an
+   isolated notch keeps its double, and the mouse feels exactly as before.
+   A capture listener on the container runs before xterm's own handler, so the
+   flag is set by the time the report reaches onData. */
+const WHEEL_BURST_MS = 100
+let lastWheelAt = 0, wheelInBurst = false
+$('term').addEventListener('wheel', () => {
+  const now = performance.now()
+  wheelInBurst = now - lastWheelAt < WHEEL_BURST_MS
+  lastWheelAt = now
+}, { capture: true, passive: true })
 term.onData(d => {
   /* Mouse reports describe a moment — a click at these coordinates, a wheel
      notch now. Buffering one through a reconnect and replaying it later would
@@ -739,7 +755,7 @@ term.onData(d => {
      all. Typing is the thing worth holding onto. */
   if (MOUSE_REPORT.test(d)){
     if (ws?.readyState === 1)
-      ws.send(JSON.stringify({t:'in', d: WHEEL_REPORT.test(d) ? d + d : d}))
+      ws.send(JSON.stringify({t:'in', d: WHEEL_REPORT.test(d) && !wheelInBurst ? d + d : d}))
     return
   }
   /* ctrl-Z in a Claude session is a trap here, so it becomes ctrl-_ (undo).
