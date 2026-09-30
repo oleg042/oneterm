@@ -124,7 +124,7 @@ case "$R" in *no_conversation*409) ok "a claude tab with no conversation is 409 
 # ── claude parent with a conversation: the fork command line ───────────────
 U=$(uuidgen | tr 'A-Z' 'a-z')
 mkdir -p "$TMP/proj"
-printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"hi"},"timestamp":"2026-09-29T00:00:00Z"}\n' \
+printf '{"type":"user","uuid":"m1","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"hi"},"timestamp":"2026-09-29T00:00:00Z"}\n' \
   "$U" "$TMP/work" > "$TMP/proj/$U.jsonl"
 curl -s -X POST --data "{\"id\":\"$Q\",\"action\":\"session\",\"claudeSession\":\"$U\",\"transcript\":\"$TMP/proj/$U.jsonl\"}" \
   "$B/agent-event" >/dev/null
@@ -147,12 +147,18 @@ case "$START" in *--dangerously-skip-permissions*) ok "it inherits the parent's 
 [ "$(opt "$F" @oneterm_fork_of)" = "$TMP/proj/$U.jsonl" ] \
   && ok "a branch remembers the transcript it was forked from" \
   || bad "no fork source recorded on the branch: '$(opt "$F" @oneterm_fork_of)'"
+# …and WHERE that transcript ended when it was forked. The file keeps growing
+# while its tab talks on, so the path alone cannot say what the branch holds.
+[ "$(opt "$F" @oneterm_fork_at)" = "m1" ] \
+  && ok "…and the message the source ended on at that moment" \
+  || bad "no fork point recorded on the branch: '$(opt "$F" @oneterm_fork_at)'"
 # A stand-in for that untouched branch: a shell re-tagged as claude (a real
 # fork of a fake conversation exits and re-tags itself as a shell mid-test),
 # carrying a fork source, whose hook-reported transcript was never written.
 N=$(post "new?cmd=shell&cwd=$TMP/work" | idof); MADE+=("$N"); sleep 0.5
 "$TMUX_BIN" set-option -t "oneterm_$N" @oneterm_cmd claude
 "$TMUX_BIN" set-option -t "oneterm_$N" @oneterm_fork_of "$TMP/proj/$U.jsonl"
+"$TMUX_BIN" set-option -t "oneterm_$N" @oneterm_fork_at "m1"
 NEWU=$(uuidgen | tr 'A-Z' 'a-z')
 curl -s -X POST --data "{\"id\":\"$N\",\"action\":\"session\",\"claudeSession\":\"$NEWU\",\"transcript\":\"$TMP/proj/$NEWU.jsonl\"}" \
   "$B/agent-event" >/dev/null
@@ -165,6 +171,27 @@ case "$("$TMUX_BIN" display-message -p -t "oneterm_$GC" '#{pane_start_command}' 
 [ "$(opt "$GC" @oneterm_fork_of)" = "$TMP/proj/$U.jsonl" ] \
   && ok "…and the new branch remembers the same source, so a whole chain works" \
   || bad "grandchild fork source: '$(opt "$GC" @oneterm_fork_of)'"
+
+# The source talks on after the fork: its file now ends past where the branch
+# was cut. Forking it again would hand the new tab turns the branch never had,
+# so the honest answer is a refusal that says why.
+printf '{"type":"assistant","uuid":"m2","sessionId":"%s","cwd":"%s","message":{"role":"assistant","content":"later"},"timestamp":"2026-09-29T00:05:00Z"}\n' \
+  "$U" "$TMP/work" >> "$TMP/proj/$U.jsonl"
+R=$(curl -s -w ' %{http_code}' -X POST -H "$O" "$B/branch?id=$N")
+LEAK=$(printf '%s' "$R" | idof); [ -n "$LEAK" ] && MADE+=("$LEAK")
+case "$R" in *branch_not_started*409) ok "once the source has moved on, an untouched branch is refused, not mis-copied" ;;
+  *) bad "moved-on source: $R" ;; esac
+
+# The tab moves to a different conversation — what /clear does. Its lineage
+# described the old one, so it must be forgotten, or a later branch would
+# fall back to a conversation the tab no longer holds.
+NEWU2=$(uuidgen | tr 'A-Z' 'a-z')
+curl -s -X POST --data "{\"id\":\"$N\",\"action\":\"session\",\"claudeSession\":\"$NEWU2\",\"transcript\":\"$TMP/proj/$NEWU2.jsonl\"}" \
+  "$B/agent-event" >/dev/null
+sleep 0.5
+[ -z "$(opt "$N" @oneterm_fork_of)" ] && [ -z "$(opt "$N" @oneterm_fork_at)" ] \
+  && ok "switching conversations (e.g. /clear) forgets the tab's lineage" \
+  || bad "lineage survived a conversation switch: '$(opt "$N" @oneterm_fork_of)'"
 
 # ── review focus 1: the first prompt was a big paste ───────────────────────
 # The first line carrying a cwd is the first user message. Make it 100KB — past

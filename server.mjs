@@ -252,9 +252,20 @@ function saveHookState() {
  * SubagentStop never reaches here: the hook drops anything carrying agent_id. */
 function applyAgentEvent({ id, action, claudeSession, transcript, model, ctxPct, ctxSize, limits }) {
   if (!id) return false
+  const before = hookState.get(id)?.transcript
   const entry = applyEvent(hookState.get(id),
                            { action, claudeSession, transcript, model, ctxPct, ctxSize, limits })
   hookState.set(id, entry)
+
+  /* A branch's lineage (@oneterm_fork_of/_at) describes the conversation the
+     tab was BORN with. When the tab moves to another one — /clear, or a new
+     claude started in it — that record says nothing about what it now holds,
+     and /branch falling back to it would fork a conversation the tab left.
+     A tab's first SessionStart has no `before`, so a fresh branch keeps it. */
+  if (before && entry.transcript && entry.transcript !== before) {
+    for (const k of ['@oneterm_fork_of', '@oneterm_fork_at'])
+      tmux(['set-option', '-u', '-t', PREFIX + id, k])      // best effort; tmux() never throws
+  }
 
   /* A status report is not a turn boundary and must not be treated as one.
      Clearing hookQuiet here would be a real bug rather than a cosmetic one:
@@ -512,6 +523,27 @@ async function readConversation(path, mtime) {
     // Only while it exists: a removed worktree sends it back to where it began.
     if (home && await isDir(home)) cwd = home
     return { id, cwd, title: title || firstUser || basename(cwd), preview: firstUser || '', at }
+  } catch { return null }
+  finally { await fh?.close().catch(() => {}) }
+}
+
+/** The uuid of the newest message in a transcript — where it ENDS right now.
+ *  null for a file that is missing or has no message with a uuid yet. */
+async function lastMessageUuid(path) {
+  let fh
+  try {
+    fh = await open(path, 'r')
+    const size = (await fh.stat()).size
+    const start = Math.max(0, size - CONV_TAIL)
+    const { buffer, bytesRead } = await fh.read(Buffer.alloc(Math.min(CONV_TAIL, size)), 0,
+                                                Math.min(CONV_TAIL, size), start)
+    const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n')
+    if (start > 0) lines.shift()             // first line of a mid-file read is a fragment
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let d; try { d = JSON.parse(lines[i]) } catch { continue }
+      if ((d.type === 'user' || d.type === 'assistant') && typeof d.uuid === 'string') return d.uuid
+    }
+    return null
   } catch { return null }
   finally { await fh?.close().catch(() => {}) }
 }
@@ -1182,26 +1214,45 @@ async function route(req, res) {
          branch used to be refused as "nothing to branch". Until that first
          message the branch is exactly its source as of the fork, so fall back
          to the transcript it was forked from. Chains work the same way: the
-         new branch records the source that was really used. */
+         new branch records the source that was really used.
+
+         …but only while that source still ENDS where it did at the fork. The
+         path alone is not a snapshot: a live parent keeps talking into the
+         same file, and resuming it later handed the new tab turns the branch
+         never had — silently, which is the worst way to be wrong. So each
+         branch also records the message its source ended on, and a source
+         that has moved past it is refused with a reason instead. */
       const own = hookState.get(parent.id)?.transcript
-      const forkOf = (await tmux(['show-options', '-qv', '-t', PREFIX + parent.id,
-                                  '@oneterm_fork_of'])).trim()
-      for (const t of [own, forkOf]) {
-        const convId = conversationIdFromTranscript(t)
-        const conv = convId ? await readConversation(t, 0) : null
-        if (conv) { resume = convId; cwd = conv.cwd; source = t; break }
+      const opt = async k => (await tmux(['show-options', '-qv', '-t', PREFIX + parent.id, k])).trim()
+      const forkOf = await opt('@oneterm_fork_of'), forkAt = await opt('@oneterm_fork_at')
+      const ownId = conversationIdFromTranscript(own)
+      const ownConv = ownId ? await readConversation(own, 0) : null
+      if (ownConv) { resume = ownId; cwd = ownConv.cwd; source = own }
+      else if (forkOf) {
+        const srcId = conversationIdFromTranscript(forkOf)
+        const srcConv = srcId ? await readConversation(forkOf, 0) : null
+        if (srcConv && forkAt && (await lastMessageUuid(forkOf)) === forkAt) {
+          resume = srcId; cwd = srcConv.cwd; source = forkOf
+        } else if (srcConv) return json(res, { error: 'branch_not_started' }, 409)
       }
       if (!resume) return json(res, { error: 'no_conversation' }, 409)
     }
     if (!(await isDir(cwd))) return json(res, { error: 'no_such_directory', cwd }, 400)
 
+    /* Where the source ends, read BEFORE the fork starts. If it grows in the
+       moment between here and claude reading it, the fallback above sees a
+       mismatch and refuses — it can err toward a refusal, never toward the
+       wrong conversation. */
+    const forkPoint = source ? await lastMessageUuid(source) : null
     const id = 's' + Date.now().toString(36)
     await createSession({ id, cmd: parent.cmd, cwd,
       cols: Number(q.get('cols')), rows: Number(q.get('rows')),
       skip: parent.skip, resume, fork: true,
       label: branchLabel(parent.label, list.map(s => s.label)) })
-    // What it was forked from, for the day someone branches it before typing.
+    // What it was forked from, and where, for the day someone branches it
+    // before typing.
     if (source) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_fork_of', source])
+    if (forkPoint) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_fork_at', forkPoint])
     // createSession put it on top; a branch belongs under the tab it came from.
     await writeOrder(orderAfter(list.map(s => s.id), parent.id, id))
     console.log(`[branch] ${parent.id} -> ${id}` + (resume ? ` (fork of ${resume})` : ' (shell)'))

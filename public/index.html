@@ -1305,6 +1305,7 @@ async function branchSession(id, { newTab = false } = {}){
       '&cols=' + term.cols + '&rows=' + term.rows)
     if (!r?.id){
       toast(r?.error === 'no_conversation' ? 'nothing to branch yet — send this session a message first'
+          : r?.error === 'branch_not_started' ? "this branch hasn't started yet and its source has moved on — send it a message first"
           : r?.error === 'no_such_directory' ? 'that folder is gone: ' + tilde(r.cwd || '')
           : "couldn't branch that session", 4200)
       return
