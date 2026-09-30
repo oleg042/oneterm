@@ -87,6 +87,23 @@ try {
                               : bad(`installer printed:\n${printed}`)
 } catch (e) { bad(`installer --print failed: ${e.stderr || e.message}`) }
 
+/* The terminal path used to write the rule to a temp file YOU own, check it,
+   then have root copy it — while sudo sat waiting for your password, any
+   process running as you could rewrite that file to "ALL=(ALL) NOPASSWD: ALL"
+   and root would install it. It now runs the very command the dialog path
+   runs, rule quoted inside, so there is one audited root path and no file. */
+try {
+  const installer = new URL('../bin/install-sleep-switch.sh', import.meta.url).pathname
+  const me2 = execFileSync('id', ['-un'], { encoding: 'utf8' }).trim()
+  const cmd = execFileSync('bash', [installer, '--print-command'],
+                           { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  cmd === rootInstallCommand(sudoersRule(me2))
+    ? ok('the terminal installer runs the same root command as the password dialog')
+    : bad(`installer command differs:\n${cmd}`)
+  !/mktemp|sudo install /.test(readFileSync(installer, 'utf8'))
+    ? ok('…and never stages the rule in a file you own') : bad('the installer still stages the rule in a temp file')
+} catch (e) { bad(`installer --print-command failed: ${e.stderr || e.message}`) }
+
 // ── first-click setup through the macOS password dialog ────────────────────
 /* The command the dialog runs AS ROOT. Run here for real — as you, into a temp
    folder — so the test executes the exact shell text that ships. Only the
