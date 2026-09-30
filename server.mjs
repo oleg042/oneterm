@@ -1133,18 +1133,30 @@ async function route(req, res) {
     const parent = list.find(s => s.id === q.get('id'))
     if (!parent) return json(res, { error: 'no_such_session' }, 404)
 
-    let cwd = parent.cwd, resume = null
+    let cwd = parent.cwd, resume = null, source = null
     if (parent.cmd === 'claude') {
       /* The hook stamps the transcript on every turn and on SessionStart —
          including the one /clear fires — so this names the conversation the
          tab is in NOW. The id comes from the filename and the cwd from the
          file: `claude --resume` finds a conversation by its project folder,
-         so the tab's live path would be the wrong question. */
-      const transcript = hookState.get(parent.id)?.transcript
-      resume = conversationIdFromTranscript(transcript)
-      const conv = resume ? await readConversation(transcript, 0) : null
-      if (!conv) return json(res, { error: 'no_conversation' }, 409)
-      cwd = conv.cwd
+         so the tab's live path would be the wrong question.
+
+         …unless the tab is a branch nobody has typed into yet. Claude Code
+         names a fork's transcript at SessionStart but only WRITES it on the
+         first message, so there is nothing on disk to read — and branching a
+         branch used to be refused as "nothing to branch". Until that first
+         message the branch is exactly its source as of the fork, so fall back
+         to the transcript it was forked from. Chains work the same way: the
+         new branch records the source that was really used. */
+      const own = hookState.get(parent.id)?.transcript
+      const forkOf = (await tmux(['show-options', '-qv', '-t', PREFIX + parent.id,
+                                  '@oneterm_fork_of'])).trim()
+      for (const t of [own, forkOf]) {
+        const convId = conversationIdFromTranscript(t)
+        const conv = convId ? await readConversation(t, 0) : null
+        if (conv) { resume = convId; cwd = conv.cwd; source = t; break }
+      }
+      if (!resume) return json(res, { error: 'no_conversation' }, 409)
     }
     if (!(await isDir(cwd))) return json(res, { error: 'no_such_directory', cwd }, 400)
 
@@ -1153,6 +1165,8 @@ async function route(req, res) {
       cols: Number(q.get('cols')), rows: Number(q.get('rows')),
       skip: parent.skip, resume, fork: true,
       label: branchLabel(parent.label, list.map(s => s.label)) })
+    // What it was forked from, for the day someone branches it before typing.
+    if (source) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_fork_of', source])
     // createSession put it on top; a branch belongs under the tab it came from.
     await writeOrder(orderAfter(list.map(s => s.id), parent.id, id))
     console.log(`[branch] ${parent.id} -> ${id}` + (resume ? ` (fork of ${resume})` : ' (shell)'))

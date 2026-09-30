@@ -82,9 +82,15 @@ every other state change has.
       `readConversation`, as resume already does. `claude --resume` looks the
       conversation up by project folder, so the parent's live path is the
       wrong input.
-   4. If there is no transcript, the file does not exist yet, or it cannot be
-      placed, return **409** `no_conversation`. This happens before the first
-      message is sent, or when the hooks are not installed.
+   4. **A branch nobody has typed into yet** (added 2026-09-30, after it was
+      refused in real use): Claude Code names a fork's transcript at
+      SessionStart but may only write the file on the first message. Until
+      then the branch is exactly its source, so the host falls back to
+      `@oneterm_fork_of`. `/branch` stamps that on every Claude branch with the
+      transcript it really forked, so chains of untouched branches work too.
+   5. If neither transcript can be placed, return **409** `no_conversation`.
+      This happens in a fresh, non-branch tab before its first message, or
+      when the hooks are not installed.
 3. **Shell parent:** the cwd is `parent.cwd`, which `listSessions` already
    resolves to the live path.
 4. If the cwd is gone, return **400** `no_such_directory`.

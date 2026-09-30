@@ -140,6 +140,32 @@ case "$START" in *--dangerously-skip-permissions*) ok "it inherits the parent's 
 [ "$(sess "$F" | get label)" = "↳ work 4" ] && ok "labelled from the parent, numbered past the shell branches" \
   || bad "claude branch label: $(sess "$F" | get label)"
 
+# ── a branch nobody has typed into yet ─────────────────────────────────────
+# Claude Code names a fork's transcript at SessionStart but writes the file
+# only on its first message. Until then the branch IS its source as of the
+# fork, so branching it has to fork that source again rather than refuse.
+[ "$(opt "$F" @oneterm_fork_of)" = "$TMP/proj/$U.jsonl" ] \
+  && ok "a branch remembers the transcript it was forked from" \
+  || bad "no fork source recorded on the branch: '$(opt "$F" @oneterm_fork_of)'"
+# A stand-in for that untouched branch: a shell re-tagged as claude (a real
+# fork of a fake conversation exits and re-tags itself as a shell mid-test),
+# carrying a fork source, whose hook-reported transcript was never written.
+N=$(post "new?cmd=shell&cwd=$TMP/work" | idof); MADE+=("$N"); sleep 0.5
+"$TMUX_BIN" set-option -t "oneterm_$N" @oneterm_cmd claude
+"$TMUX_BIN" set-option -t "oneterm_$N" @oneterm_fork_of "$TMP/proj/$U.jsonl"
+NEWU=$(uuidgen | tr 'A-Z' 'a-z')
+curl -s -X POST --data "{\"id\":\"$N\",\"action\":\"session\",\"claudeSession\":\"$NEWU\",\"transcript\":\"$TMP/proj/$NEWU.jsonl\"}" \
+  "$B/agent-event" >/dev/null
+GC=$(post "branch?id=$N" | idof); [ -n "$GC" ] && MADE+=("$GC")
+[ -n "$GC" ] && ok "a branch nobody has typed into can itself be branched" \
+  || bad "branching an untouched branch was refused"
+case "$("$TMUX_BIN" display-message -p -t "oneterm_$GC" '#{pane_start_command}' 2>/dev/null)" in
+  *"--resume $U --fork-session"*) ok "…by forking its source again" ;;
+  *) bad "the untouched branch was not forked from its source" ;; esac
+[ "$(opt "$GC" @oneterm_fork_of)" = "$TMP/proj/$U.jsonl" ] \
+  && ok "…and the new branch remembers the same source, so a whole chain works" \
+  || bad "grandchild fork source: '$(opt "$GC" @oneterm_fork_of)'"
+
 # ── review focus 1: the first prompt was a big paste ───────────────────────
 # The first line carrying a cwd is the first user message. Make it 100KB — past
 # the 64KB head read that used to drop it as a fragment and refuse the branch.
