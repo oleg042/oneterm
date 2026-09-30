@@ -67,6 +67,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;paddin
    crisper. */
 aside{flex:0 0 222px;height:100%;display:flex;flex-direction:column;background:var(--rail);
   min-width:0;overflow:hidden}
+/* ?rail=0 — embedded use (the study cockpit's tutor pane): terminal only, no session rail. */
+body.norail aside{display:none}
 .brand{padding:20px 20px 16px;font-size:12px;font-weight:500;letter-spacing:.16em;
   text-transform:uppercase;color:var(--faint)}
 .brand b{color:var(--accent);font-weight:500}
@@ -483,6 +485,8 @@ kbd{font-family:var(--mono);font-size:9.5px;color:var(--muted)}
 <script src="/vendor/addon-fit.js"></script>
 <script src="/vendor/addon-canvas.js"></script>
 <script>
+/* ?rail=0 hides the session rail — for embedding one session in another app. */
+if (new URLSearchParams(location.search).get('rail') === '0') document.body.classList.add('norail')
 const $ = id => document.getElementById(id)
 /* terminal palettes drawn from the same warm neutrals, so the rectangle
    belongs to the room instead of sitting on top of it */
@@ -500,7 +504,10 @@ const THEMES = {
     brightRed:'#E3907E', brightGreen:'#9AC199', brightYellow:'#EBC87E',
     brightBlue:'#A2C1E0', brightMagenta:'#CDB2D3', brightCyan:'#9BC8CD', brightWhite:'#EDE9E1' },
 }
-let theme = localStorage.getItem('oneterm-theme')
+/* ?theme=light|dark — an embedding app (the study cockpit) keeps the pane on its own theme; not persisted. */
+const themeParam = new URLSearchParams(location.search).get('theme')
+let theme = (themeParam === 'light' || themeParam === 'dark') ? themeParam
+  : localStorage.getItem('oneterm-theme')
   || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
 document.documentElement.dataset.theme = theme
 
@@ -515,6 +522,16 @@ const term = new Terminal({
   // paths are mutually exclusive, so scrolling is never doubled twice.
   scrollSensitivity:2,
   theme:THEMES[theme], macOptionIsMeta:true,
+  /* The ONLY way to get a real xterm selection on a Mac. tmux holds the
+     mouse (see set-clipboard in createSession), so every plain drag is
+     forwarded to it and xterm never selects anything; xterm's own escape
+     hatch is shouldForceSelection(), which on macOS reads
+     `e.altKey && macOptionClickForcesSelection` — and with this left at its
+     default of false there was no modifier at all that produced a
+     selection. Option+drag is also what iTerm2 uses for exactly this, so
+     the gesture is already in the fingers. Mouse-only: macOptionIsMeta
+     above still owns Option on the KEYBOARD. */
+  macOptionClickForcesSelection:true,
   // NO minimumContrastRatio. It floors foreground contrast against the
   // background, which reads as a fix for text and as vandalism for ART: the
   // Claude Code mascot is truecolor block characters where the colour IS the
@@ -1833,6 +1850,39 @@ $('docEdit').onclick = () => {
   typeIn('Open ' + docOpen.path + ' and ')
   toast('path handed to the session — say what to change')
 }
+
+/* ── clipboard: OSC 52 ────────────────────────────────────────────────────
+   Where a tmux drag-copy actually ends up.
+
+   tmux owns the mouse, so a drag never reaches xterm's selection — tmux copies
+   the text into one of its own paste buffers, which nothing outside tmux can
+   read. With set-clipboard on it ALSO emits OSC 52 carrying the same bytes,
+   and this is the end that turns that into a real clipboard write. Before this
+   handler existed the sequence arrived intact and was discarded, which is why
+   dragging read as doing nothing whatsoever.
+
+   The '?' form is a clipboard READ request, and it is never answered. Anything
+   running in the pane can ask, and a reply would hand it whatever you last
+   copied anywhere on the machine. Swallowed, not served. */
+term.parser.registerOscHandler(52, payload => {
+  const semi = payload.indexOf(';')
+  const b64 = semi === -1 ? payload : payload.slice(semi + 1)
+  if (b64 === '?' || !b64) return true
+  let text
+  try {
+    /* atob yields one character per BYTE, and handing that straight to the
+       clipboard is precisely the mojibake the probe below is chasing — "┌"
+       arriving as "‚îå". Decode the bytes as UTF-8 first. */
+    text = new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)))
+  } catch { return true }
+  if (!text) return true
+  navigator.clipboard.writeText(text)
+    .then(() => toast(`copied ${text.length} character${text.length === 1 ? '' : 's'}`))
+    /* Chrome refuses a clipboard write from an unfocused document. Say so,
+       rather than letting it look like the drag failed again. */
+    .catch(() => toast('copied inside tmux, but the browser refused the clipboard — click the terminal and drag again', 5000))
+  return true
+})
 
 /* ── copy probe ───────────────────────────────────────────────────────────
    Copying a table sometimes puts MOJIBAKE on the clipboard — "┌" arrives as

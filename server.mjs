@@ -546,6 +546,26 @@ async function readConversations() {
 
 async function createSession({ id, cmd, cwd, cols, rows, skip, resume, fork, label }) {
   const name = PREFIX + id
+/* What a dead TUI leaves behind.
+ *
+ * claude is a full-screen program: it turns on mouse tracking, focus
+ * reporting, bracketed paste and colour-scheme reports, and on a clean exit it
+ * turns them all off again. On an UNCLEAN one — SIGKILL from Activity Monitor,
+ * an OOM, a crash — it does not, and the modes belong to the terminal, not to
+ * the process that set them. The login shell we fall through to knows nothing
+ * about any of them, so the pane keeps reporting: every mouse MOVEMENT arrives
+ * at zsh as a keystroke and types itself onto the command line
+ * (ESC[<35;x;yM per pixel of travel), focus changes type ESC[I and ESC[O, and
+ * a theme switch types ESC[?997;1n. Observed: a shell prompt filling itself
+ * with "35;42;22M35;42;23M…" faster than it could be read, with the cursor
+ * invisible because claude had hidden it.
+ *
+ * So the fallthrough resets the terminal itself. Not `reset`/`tput reset`,
+ * which clears the screen and throws away the scrollback the fallthrough
+ * exists to preserve — just the modes a TUI is known to own, plus stty for the
+ * line discipline, which a killed program leaves in raw mode. */
+const TTY_RESET = "stty sane 2>/dev/null; printf '\\033[?1000l\\033[?1002l\\033[?1003l\\033[?1004l\\033[?1005l\\033[?1006l\\033[?1015l\\033[?1016l\\033[?2004l\\033[?2031l\\033[?1049l\\033[?25h\\033[?7h\\033[r\\033[m'"
+
   /* A resumed conversation is still a claude session; it just starts with
      --resume <id>. The id comes from the transcript's own sessionId, and the
      session is created with that conversation's cwd, so the agent wakes up
@@ -581,7 +601,7 @@ async function createSession({ id, cmd, cwd, cols, rows, skip, resume, fork, lab
    *
    * @oneterm_label is deliberately NOT touched: the tab keeps its name. */
   const inner = cmd === 'claude'
-    ? `${claudeCmd}; ${TMUX} set-option -t ${name} @oneterm_cmd shell 2>/dev/null; ` +
+    ? `${claudeCmd}; ${TTY_RESET}; ${TMUX} set-option -t ${name} @oneterm_cmd shell 2>/dev/null; ` +
       `echo; echo "[oneterm] claude exited — this tab is now a shell. ` +
       `run 'claude --continue' to pick up where you left off."; exec ${SHELL} -l`
     : `exec ${SHELL} -l`
@@ -645,6 +665,21 @@ async function createSession({ id, cmd, cwd, cols, rows, skip, resume, fork, lab
   await tmux(['set-option', '-t', name, 'window-size', 'latest'])
   await tmux(['set-option', '-t', name, 'status', 'off'])   // no tmux bar; our UI is the chrome
   await tmux(['set-option', '-t', name, 'mouse', 'on'])
+  /* The other half of grabbing the mouse.
+   *
+   * `mouse on` is what makes the wheel scroll tmux's history, but it also
+   * means tmux — not the browser — owns a DRAG. xterm.js stops doing local
+   * selection and forwards the events; tmux runs copy-pipe-and-cancel, which
+   * copies into a tmux paste buffer and immediately cancels copy mode. So the
+   * highlight flashes, vanishes, and the system clipboard never changes: 919
+   * buffers of abandoned drag attempts had piled up before anyone worked out
+   * where the text was going. set-clipboard makes that same copy also emit
+   * OSC 52, which the page turns into a real clipboard write.
+   *
+   * It reads as a session option but tmux routes it to the SERVER, so setting
+   * it per session is idempotent rather than wasteful — and it means a session
+   * born before this existed gets it the moment any new one is created. */
+  await tmux(['set-option', '-t', name, 'set-clipboard', 'on'])
   await tmux(['set-option', '-t', name, 'history-limit', '50000'])
   // tmux() swallows failures, so without this /new could hand back an id for a
   // session that was never created and the client would attach to nothing.
@@ -1254,6 +1289,20 @@ wss.on('connection', async (ws, req) => {
   // each auto-reconnects — an infinite reattach war that reads as the whole
   // screen strobing. Without -d they simply mirror, and `window-size latest`
   // (set at creation) means the most recent client decides the pane size.
+  // node-pty is pinned to 1.2.0-beta.15, NOT the ^1.x that npm calls latest.
+  // 1.1.0's macOS spawn path opens throwaway ptys to burn low fd numbers and
+  // then cleans up with `for (; count > 0; count--)` — count is 0 in the normal
+  // case, so the loop never runs and low_fds[0], a live /dev/ptmx, leaks on
+  // every spawn. We spawn one here per attach, i.e. per reconnect and per
+  // session switch, so the host ate a pty device roughly 110 times a day
+  // against the system-wide kern.tty.ptmx_max of 511. Measured: 4 days uptime,
+  // 488 live ptmx fds held, and then nothing on the Mac could open a pty —
+  // this attach failed with node-pty's misleading "posix_spawnp failed." (every
+  // early return in pty_posix_spawn leaves err at its -1 init, so the throw is
+  // always that string; the call that actually failed was posix_openpt), and
+  // Terminal.app, an unrelated app, failed at the same moment with the honest
+  // "forkpty: Device not configured". The beta closes low_fds[0..count].
+  // Do not relax this to ^1.1.0.
   try {
     term = pty.spawn(TMUX, ['-u', 'attach-session', '-t', name], {
       name: 'xterm-256color', cols, rows, cwd: HOME,
@@ -1317,7 +1366,7 @@ process.on('unhandledRejection', (e) => {
  * anything created outside createSession — a new window, a pane split, a
  * session made by hand — is born UTF-8 as well. Sessions already running keep
  * the environment their processes started with; those have to be recreated. */
-async function stampServerLocale() {
+async function stampServerDefaults() {
   /* Only stamp a server that already exists. set-environment would START one,
      and this host boots at login for a user who may never open oneterm — so
      the locale fix would have quietly added an always-on tmux process. Nothing
@@ -1326,10 +1375,12 @@ async function stampServerLocale() {
   if (!(await tmux(['list-sessions'])).trim()) return
   await tmux(['set-environment', '-g', 'LANG', LOCALE])
   await tmux(['set-environment', '-g', 'LC_ALL', LOCALE])
+  // Server-scoped, so the sessions that already exist get it too.
+  await tmux(['set-option', '-s', 'set-clipboard', 'on'])
 }
 
 server.listen(PORT, '127.0.0.1', async () => {
-  await stampServerLocale()
+  await stampServerDefaults()
   await loadHookState()
   console.log(`oneterm → http://localhost:${PORT}  (tmux: ${TMUX}, locale: ${LOCALE})`)
 })
