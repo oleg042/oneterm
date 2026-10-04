@@ -169,6 +169,44 @@ body.norail aside{display:none}
 body.rail-dragging{cursor:grabbing}
 body.rail-dragging .sess{user-select:none}
 @media (prefers-reduced-motion:reduce){.sess{transition:none}}
+/* ── branch groups ───────────────────────────────────────────────────────────
+   Tabs that belong together share a line in the rail's left margin and a faint
+   tint. No header row, no chip, nothing to collapse, no indent — names keep
+   their full width. Group colours keep clear of the
+   status colours (accent working, amber waiting, green done), so a group can
+   never be read as a state. Spec: plan/branch-groups.md. */
+:root{--g0:#3D5A80;--g1:#7A4C70;--g2:#3B6B73;--g3:#6A5A9A;--g4:#5E6670}
+html[data-theme="dark"]{--g0:#8FA8CC;--g1:#C99BBE;--g2:#86B7BE;--g3:#A99BD6;--g4:#A3ABB5}
+[data-c="0"]{--gc:var(--g0)} [data-c="1"]{--gc:var(--g1)} [data-c="2"]{--gc:var(--g2)}
+[data-c="3"]{--gc:var(--g3)} [data-c="4"]{--gc:var(--g4)}
+.grp{position:relative;flex:0 0 auto;display:flex;flex-direction:column;gap:1px;margin:3px 0;
+  border-radius:5px;background:color-mix(in srgb,var(--gc) 6%,transparent)}
+.grp::before{content:'';position:absolute;left:-7px;top:9px;bottom:9px;width:2px;border-radius:2px;
+  background:color-mix(in srgb,var(--gc) 55%,transparent)}
+/* While dragging, the held row is the preview: the line of the group it would
+   land in, and a pill when the drop would change its group. A tab it could
+   group with, once held over long enough, wears a dashed ring. */
+.sess.drag-src{overflow:visible}
+.sess .dl{position:absolute;left:-7px;top:9px;bottom:9px;width:2px;border-radius:2px;
+  background:color-mix(in srgb,var(--gc) 55%,transparent);pointer-events:none}
+.sess .dp{position:absolute;top:7px;right:7px;padding:1px 7px 2px;border-radius:99px;
+  font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;font-style:normal;pointer-events:none;
+  color:var(--gc);background:color-mix(in srgb,var(--gc) 15%,var(--rail))}
+.sess.hold{outline:1.5px dashed var(--gc);outline-offset:-1.5px}
+/* Mid-drag, rows slide by transform while the group's wrapper stays where it
+   was — so its tint and line would sit one row off from the rows they mark.
+   For the length of a drag each member row carries its own share instead,
+   and the marks travel with it. A background IMAGE, so the row's own wash
+   (you are here, waiting) still shows through underneath. */
+body.rail-dragging .grp{background:none}
+body.rail-dragging .grp::before{display:none}
+body.rail-dragging .grp > .sess:not(.drag-src){overflow:visible;
+  background-image:linear-gradient(color-mix(in srgb,var(--gc) 6%,transparent),color-mix(in srgb,var(--gc) 6%,transparent))}
+body.rail-dragging .grp > .sess:not(.drag-src)::after{content:'';position:absolute;left:-7px;top:-1px;bottom:0;
+  width:2px;background:color-mix(in srgb,var(--gc) 55%,transparent)}
+body.rail-dragging .grp > .sess:first-child::after{top:9px}
+body.rail-dragging .grp > .sess:last-child::after{bottom:9px}
+body.rail-dragging .sess .x,body.rail-dragging .sess .br{opacity:0}
 .rename{cursor:text;user-select:text;width:100%;background:var(--sink);border:1px solid var(--accent);
   border-radius:3px;padding:3px 6px;font-family:var(--ui);font-size:13px;
   color:var(--ink);outline:none}
@@ -909,6 +947,16 @@ const soundNeeds = () => tone([[523, 0, 0.15], [784, 0.11, 0.15], [1046, 0.22, 0
 
 /* ── rail ────────────────────────────────────────────────────────────────── */
 let dragId = null, armedKill = null, armedBranch = null, armTimer = null, lastSig = '', renaming = false
+
+/* Branch groups. Which tabs are a group, and where a drop lands, are decided
+   in groups.mjs — the very file the host imports and the tests run, loaded
+   from the host. Until it arrives, or if it never does, G stays null and the
+   rail paints flat exactly as it did before groups: a module that fails to
+   load costs the grouping, never the rail. */
+let G = null
+const groupsReady = import('/groups.mjs').then(m => { G = m },
+  e => console.warn('[groups] unavailable, the rail stays flat', e))
+const HOLD_MS = 400               // a pause this long over a tab arms grouping
 /* The rail's branch glyph. SVG rather than a character: the fork symbols in
    Unicode are missing from enough fonts to render as an empty box. */
 const BRANCH_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" ' +
@@ -927,13 +975,23 @@ let railOwed = false
 
 function beginDrag(e, el, id){
   if (e.button !== 0 || renaming) return
-  if (e.target.closest('.x') || e.target.closest('.br') || e.target.closest('input')) return   // row buttons, rename field
-  const rows = [...$('slist').children]
+  if (e.target.closest('.x, .br, input')) return          // row buttons, rename field
+  /* The rows, not the list's children: a group wraps its own. */
+  const rows = [...$('slist').querySelectorAll('.sess')]
   const idx = rows.indexOf(el)
   if (idx < 0) return
-  const rects = rows.map(r => r.getBoundingClientRect())
-  const step = rows.length > 1 ? rects[1].top - rects[0].top : rects[0].height
+  /* One row's travel. Taken from the held row itself rather than the gap
+     between the first two: a group's margin sits between some rows and not
+     others, and the rows that slide aside move by the held row's own height. */
+  const step = el.getBoundingClientRect().height + 1
   drag = { id, el, rows, idx, to: idx, step, startY: e.clientY, moved: false }
+  /* With groups, travel maps onto groups.mjs's drop positions: each group
+     edge costs half a row more (the doorway), and the middle of a tab you
+     could group with holds the gap still. Without the module: rows, as ever. */
+  if (G){
+    const layout = G.dropLayout(sessions, id), gm = G.memberMap(sessions)
+    Object.assign(drag, { layout, gm, group: gm.get(id) ?? null, pos: layout.origin, hold: null })
+  }
   el.setPointerCapture?.(e.pointerId)
   /* On the WINDOW, not the row. These used to hang off the row element, and a
      row is rebuilt by every paintRail — so a repaint mid-press detached the
@@ -962,15 +1020,81 @@ function onDragMove(e){
   }
   drag.el.style.transform = `translateY(${dy}px)`
 
-  // where would it land? one step of travel = one position
-  const to = Math.max(0, Math.min(drag.rows.length - 1, drag.idx + Math.round(dy / drag.step)))
+  if (!drag.layout){
+    // where would it land? one step of travel = one position
+    const to = Math.max(0, Math.min(drag.rows.length - 1, drag.idx + Math.round(dy / drag.step)))
+    if (to !== drag.to){ drag.to = to; layoutGap() }
+    return
+  }
+  const { layout } = drag
+  const c = layout.positions[layout.origin].offset + dy / drag.step
+  const { pos, over } = G.locate(layout, c, drag.pos, holdable)
+  drag.pos = pos
+  const to = layout.positions[pos].gap
   if (to !== drag.to){ drag.to = to; layoutGap() }
+  trackHold(over, e)
+  paintPreview()
+}
+
+/* A tab the dragged one could group with: any, except one already in its group. */
+function holdable(r){
+  const g = drag.gm.get(drag.layout.rows[r].id)
+  return !(g && g === drag.group)
+}
+const rowById = id => drag.rows.find(r => r.dataset.id === id)
+/* Grouping arms after a real PAUSE over a tab: every few px of movement
+   restarts the clock, so dragging slowly past a tab never groups by accident. */
+function trackHold(over, e){
+  const h = drag.hold
+  if (over === null){ disarmHold(); return }
+  if (h && h.r === over && Math.hypot(e.clientX - h.x, e.clientY - h.y) <= 6) return
+  if (h && h.r === over && h.armed) return            // armed stays armed while it stays over
+  disarmHold()
+  drag.hold = { r: over, x: e.clientX, y: e.clientY, armed: false,
+                timer: setTimeout(() => { if (drag?.hold?.r === over){ drag.hold.armed = true; paintPreview() } }, HOLD_MS) }
+}
+function disarmHold(){
+  if (!drag?.hold) return
+  clearTimeout(drag.hold.timer)
+  const t = rowById(drag.layout.rows[drag.hold.r].id)
+  if (t){ t.classList.remove('hold'); t.querySelector(':scope > .dp')?.remove(); delete t.dataset.c }
+  drag.hold = null
+}
+/* The held row is the preview: the line of the group it would land in, and a
+   pill when the drop changes its group — `join` in the new group's colour,
+   `ungroup` in the old one's. Armed over a tab, that tab wears the dashed
+   ring and the pill instead, in the colour the group will have. */
+function paintPreview(){
+  const { el, layout, hold } = drag
+  let line = null, pill = null, pillColor = null
+  if (hold?.armed){
+    const t = rowById(layout.rows[hold.r].id), tg = drag.gm.get(layout.rows[hold.r].id)
+    const color = tg ? G.groupColor(tg) : Number(G.newGroupId(G.liveGroupIds(sessions))[0])
+    if (t && !t.classList.contains('hold')){
+      t.classList.add('hold'); t.dataset.c = color
+      const p = document.createElement('i'); p.className = 'dp'; p.textContent = 'group'; t.appendChild(p)
+    }
+  } else {
+    const g = layout.positions[drag.pos].group
+    line = g
+    if (g !== drag.group){ pill = g ? 'join' : 'ungroup'; pillColor = g ?? drag.group }
+  }
+  let dl = el.querySelector(':scope > .dl'), dp = el.querySelector(':scope > .dp')
+  if (line){
+    if (!dl){ dl = document.createElement('i'); dl.className = 'dl'; el.appendChild(dl) }
+  } else dl?.remove()
+  if (pill){
+    if (!dp){ dp = document.createElement('i'); dp.className = 'dp'; el.appendChild(dp) }
+    dp.textContent = pill
+  } else dp?.remove()
+  const color = pill ? pillColor : line
+  if (color) el.dataset.c = G.groupColor(color); else delete el.dataset.c
 }
 
 /* Everything between the origin and the target shifts by one row, opening a
    gap exactly where the held row will land. */
 function layoutGap(){
-  const { rows, idx, to, step, el } = drag
+  const { rows, idx, to, step, el } = drag   // step: the held row's own height
   rows.forEach((r, i) => {
     if (r === el) return
     let shift = 0
@@ -991,11 +1115,16 @@ async function endDrag(e){
      left set, which is the frozen-rail state all over again. This is the only
      place that state gets cleared, so nothing in it may abort. */
   if (d.el.isConnected) try { d.el.releasePointerCapture?.(e.pointerId) } catch {}
-  for (const r of d.rows) r.style.transform = ''
+  if (d.hold) clearTimeout(d.hold.timer)
+  for (const r of d.rows){
+    r.style.transform = ''
+    r.classList.remove('hold'); r.querySelectorAll(':scope > .dl, :scope > .dp').forEach(x => x.remove())
+  }
   d.el.classList.remove('drag-src')
   document.body.classList.remove('rail-dragging')
   const owed = railOwed; railOwed = false
   if (!d.moved){ dragId = null; if (owed) paintRail(); return }   // it was a click after all
+  if (d.layout){ dropGrouped(d); return }
   if (d.to === d.idx){ dragId = null; paintRail(); return }
 
   const next = sessions.slice()
@@ -1004,12 +1133,42 @@ async function endDrag(e){
   sessions = next
   dragId = null
   paintRail()                                       // optimistic: no wait, no flicker
-  await post('/reorder?ids=' + sessions.map(x => x.id).join(','))
+  await writeLayout('/reorder?ids=' + sessions.map(x => x.id).join(','))
+}
+
+/* A grouped drop: groups.mjs says what the rail becomes — order AND every
+   tab's group — and the whole of it goes to the host in one /reorder. Applied
+   here first, as the plain drop is, so nothing waits on the round trip. */
+async function dropGrouped(d){
+  const armed = d.hold?.armed
+  const p = d.layout.positions[d.pos]
+  if (!armed && d.pos === d.layout.origin){ dragId = null; paintRail(); return }
+  const r = G.resolveDrop(sessions, d.id,
+    armed ? { onto: d.layout.rows[d.hold.r].id } : { before: p.before, group: p.group })
+  if (!r){ dragId = null; paintRail(); return }
+  const byId = new Map(sessions.map(s => [s.id, s]))
+  sessions = r.ids.map((id, i) => ({ ...byId.get(id), group: r.groups[i] || null }))
+  dragId = null
+  paintRail()
+  await writeLayout('/reorder?ids=' + r.ids.join(',') + '&groups=' + r.groups.join(','))
+}
+
+/* Bumped on both sides of every layout write. A poll that was in flight
+   across one may carry the layout from before it, and taking it would paint
+   the drop undone — and a second drag made from that stale list would send
+   the old order and groups back to the host. Such a poll is dropped; the
+   next one, 1.5s on, is after the write. */
+let layoutSeq = 0
+async function writeLayout(path){
+  layoutSeq++
+  try { return await post(path) } finally { layoutSeq++ }
 }
 
 async function refresh(){
   if (dragId || renaming) return                             // never repaint mid-drag
+  const seq = layoutSeq
   const list = await api('/sessions'); if (!list) return
+  if (seq !== layoutSeq) return
   for (const s of list){
     const a = activity.get(s.id) ?? {}
     /* Sounds fire on STABLE transitions only. Both signals are sampled — a
@@ -1066,7 +1225,7 @@ async function refresh(){
   // ctxPct and model belong here too: paintRail only runs when this changes,
   // so a bar left out of the signature would draw once and then sit frozen.
   const sig = JSON.stringify(list.map(s => [s.id, s.label, s.cwd, s.waiting, s.working, s.cmd, s.skip,
-                                            s.ctxPct, s.model,
+                                            s.ctxPct, s.model, s.group,
                                             (activity.get(s.id)||{}).doneUnseen]))
   const changed = sig !== lastSig; lastSig = sig
   sessions = list
@@ -1155,22 +1314,40 @@ function paintRail(){
      fires. Owe it instead, and endDrag pays it the moment the press ends. */
   if (drag){ railOwed = true; return }
   const box = $('slist'); box.innerHTML = ''
-  for (const s of sessions){
-    const a = activity.get(s.id) ?? {}
-    /* State comes from the SERVER for every session, attached or not. Client-side
-       socket traffic only ever knew about the one session you were looking at.
-       Priority: blocked-on-you > working > finished-unseen > idle. */
-    const st = s.waiting ? 'wait' : s.working ? 'busy' : (a.doneUnseen && s.id !== active ? 'done' : '')
-    const cls = st
-    const el = document.createElement('div')
-    el.setAttribute('role', 'button'); el.tabIndex = 0
-    el.className = 'sess' + (s.id === active ? ' on' : '') + (st ? ' s-' + st : '')
-    el.title = s.cwd
+  if (!G) for (const s of sessions) box.appendChild(rowEl(s))
+  else for (const it of G.railItems(sessions)){
+    if (it.kind === 'tab'){ box.appendChild(rowEl(it.s)); continue }
+    const wrap = document.createElement('div')
+    wrap.className = 'grp'; wrap.dataset.c = it.color; wrap.dataset.g = it.id
+    for (const s of it.members) wrap.appendChild(rowEl(s))
+    box.appendChild(wrap)
+  }
+  const cur = sessions.find(x => x.id === active)
+  $('cwd').textContent = cur ? tilde(cur.cwd) : ''
+  paintTitle()
+  $('skipflag').textContent = cur?.skip ? 'permissions skipped' : ''
+}
+
+/* State comes from the SERVER for every session, attached or not. Client-side
+   socket traffic only ever knew about the one session you were looking at.
+   Priority: blocked-on-you > working > finished-unseen > idle. */
+function stateOf(s){
+  const a = activity.get(s.id) ?? {}
+  return s.waiting ? 'wait' : s.working ? 'busy' : (a.doneUnseen && s.id !== active ? 'done' : '')
+}
+
+/* One rail row. */
+function rowEl(s){
+  const st = stateOf(s)
+  const el = document.createElement('div')
+  el.setAttribute('role', 'button'); el.tabIndex = 0
+  el.className = 'sess' + (s.id === active ? ' on' : '') + (st ? ' s-' + st : '')
+  el.title = s.cwd
       + (typeof s.ctxPct === 'number'
           ? `  ·  ${s.model || 'claude'}, ${s.ctxPct}% of context used` : '')
       + (s.skip ? '  ·  permissions skipped' : '') + '  ·  double-click to rename'
-    el.innerHTML =
-      '<i class="d ' + cls + '"></i><span class="txt">' +
+  el.innerHTML =
+      '<i class="d ' + st + '"></i><span class="txt">' +
       '<span class="t"><span class="nm">' + esc(s.label) + '</span>' +
       '<i class="tag">' + (s.cmd === 'claude' ? 'cc' : 'sh') + '</i>' +
       /* No word for the state: the dot already says it, in colour and in
@@ -1178,73 +1355,69 @@ function paintRail(){
          needed — which is the one thing the dot cannot tell you. */
       (s.skip ? '<i class="warn">!</i>' : '') +
       '</span>' + pathLine(s) + '</span>'
-    el.onclick = () => switchTo(s.id)
-    el.onkeydown = e => {                       // keep keyboard activation, minus Space
-      if (renaming) return
-      if (e.key === 'Enter'){ e.preventDefault(); switchTo(s.id) }
-      if (e.key === 'F2'){ e.preventDefault(); startRename(el, s) }
-    }
-    // dblclick anywhere in the row, not just on the ~90px name
-    el.ondblclick = e => {
-      /* Not from the row's buttons. "Click twice" is a double-click to the
-         hand, and Chrome counts clicks by the OS, not per element — so
-         confirming a branch also fired dblclick, which bubbled here and opened
-         a rename, and renaming made refresh() skip the new tab entirely. */
-      if (e.target.closest('.br, .x')) return
-      e.preventDefault(); e.stopPropagation(); startRename(el, s)
-    }
-    el.dataset.id = s.id
-    el.onpointerdown = e => beginDrag(e, el, s.id)
-    const x = document.createElement('span')
-    const armed = armedKill === s.id
-    x.className = 'x' + (armed ? ' armed' : '')
-    x.textContent = armed ? '✓' : '×'
-    x.title = armed ? 'click again to end this session' : 'end session'
-    x.onclick = e => {
-      e.stopPropagation()
-      /* Two clicks for EVERY tab. This used to be Claude tabs only, on the
-         theory that a Claude session holds hours of context and a shell is
-         cheap — but a shell can be running a dev server, a build or an ssh
-         session, and killing it takes that and its scrollback with no undo.
-         It left the one destructive button as the only one that did not ask,
-         right next to a branch button that always does. One rule now: every
-         row button asks twice. Read live, like branch: a deferred repaint can
-         leave a ✓ on screen past its 3s arm. */
-      if (armedKill !== s.id){
-        armedKill = s.id; armedBranch = null; paintRail()
-        clearTimeout(armTimer); armTimer = setTimeout(() => { armedKill = armedBranch = null; paintRail() }, 3000)
-        return
-      }
-      armedKill = null; killSession(s.id)
-    }
-    /* Branch: ALWAYS two clicks, for shells too. It creates a tab rather than
-       destroying one, but a stray click still costs a tab you then have to
-       close, and the first click is where the ⌘ hint gets read. ⌘ on the
-       confirming click opens the branch in a new browser tab instead. */
-    const br = document.createElement('span')
-    const brArmed = armedBranch === s.id
-    br.className = 'br' + (brArmed ? ' armed' : '')
-    br.innerHTML = brArmed ? '✓' : BRANCH_ICON
-    br.title = brArmed ? 'click again to branch — ⌘-click opens it in a new tab'
-                       : 'branch this session (⌘⇧B)'
-    br.onclick = e => {
-      e.stopPropagation()
-      // The LIVE state, not brArmed: a repaint can be deferred, so the ✓ on
-      // screen may outlive the 3s arm it was drawn for.
-      if (armedBranch !== s.id){
-        armedBranch = s.id; armedKill = null; paintRail()
-        clearTimeout(armTimer); armTimer = setTimeout(() => { armedKill = armedBranch = null; paintRail() }, 3000)
-        return
-      }
-      armedBranch = null; clearTimeout(armTimer)
-      branchSession(s.id, { newTab: e.metaKey || e.ctrlKey })
-    }
-    el.appendChild(br); el.appendChild(x); box.appendChild(el)
+  el.onclick = () => switchTo(s.id)
+  el.onkeydown = e => {                       // keep keyboard activation, minus Space
+    if (renaming) return
+    if (e.key === 'Enter'){ e.preventDefault(); switchTo(s.id) }
+    if (e.key === 'F2'){ e.preventDefault(); startRename(el, s) }
   }
-  const cur = sessions.find(x => x.id === active)
-  $('cwd').textContent = cur ? tilde(cur.cwd) : ''
-  paintTitle()
-  $('skipflag').textContent = cur?.skip ? 'permissions skipped' : ''
+  // dblclick anywhere in the row, not just on the ~90px name
+  el.ondblclick = e => {
+    /* Not from the row's buttons. "Click twice" is a double-click to the
+       hand, and Chrome counts clicks by the OS, not per element — so
+       confirming a branch also fired dblclick, which bubbled here and opened
+       a rename, and renaming made refresh() skip the new tab entirely. */
+    if (e.target.closest('.br, .x')) return
+    e.preventDefault(); e.stopPropagation(); startRename(el, s)
+  }
+  el.dataset.id = s.id
+  el.onpointerdown = e => beginDrag(e, el, s.id)
+  const x = document.createElement('span')
+  const armed = armedKill === s.id
+  x.className = 'x' + (armed ? ' armed' : '')
+  x.textContent = armed ? '✓' : '×'
+  x.title = armed ? 'click again to end this session' : 'end session'
+  x.onclick = e => {
+    e.stopPropagation()
+    /* Two clicks for EVERY tab. This used to be Claude tabs only, on the
+       theory that a Claude session holds hours of context and a shell is
+       cheap — but a shell can be running a dev server, a build or an ssh
+       session, and killing it takes that and its scrollback with no undo.
+       It left the one destructive button as the only one that did not ask,
+       right next to a branch button that always does. One rule now: every
+       row button asks twice. Read live, like branch: a deferred repaint can
+       leave a ✓ on screen past its 3s arm. */
+    if (armedKill !== s.id){
+      armedKill = s.id; armedBranch = null; paintRail()
+      clearTimeout(armTimer); armTimer = setTimeout(() => { armedKill = armedBranch = null; paintRail() }, 3000)
+      return
+    }
+    armedKill = null; killSession(s.id)
+  }
+  /* Branch: ALWAYS two clicks, for shells too. It creates a tab rather than
+     destroying one, but a stray click still costs a tab you then have to
+     close, and the first click is where the ⌘ hint gets read. ⌘ on the
+     confirming click opens the branch in a new browser tab instead. */
+  const br = document.createElement('span')
+  const brArmed = armedBranch === s.id
+  br.className = 'br' + (brArmed ? ' armed' : '')
+  br.innerHTML = brArmed ? '✓' : BRANCH_ICON
+  br.title = brArmed ? 'click again to branch — ⌘-click opens it in a new tab'
+                     : 'branch this session (⌘⇧B)'
+  br.onclick = e => {
+    e.stopPropagation()
+    // The LIVE state, not brArmed: a repaint can be deferred, so the ✓ on
+    // screen may outlive the 3s arm it was drawn for.
+    if (armedBranch !== s.id){
+      armedBranch = s.id; armedKill = null; paintRail()
+      clearTimeout(armTimer); armTimer = setTimeout(() => { armedKill = armedBranch = null; paintRail() }, 3000)
+      return
+    }
+    armedBranch = null; clearTimeout(armTimer)
+    branchSession(s.id, { newTab: e.metaKey || e.ctrlKey })
+  }
+  el.appendChild(br); el.appendChild(x)
+  return el
 }
 function startRename(el, s){
   const holder = el.querySelector('.nm'); if (!holder) return
@@ -2008,7 +2181,7 @@ function firstRun(){
 }
 ;(async () => {
   sendResize()
-  const [sk, pr, cv] = await Promise.all([api('/skills'), api('/projects'), api('/conversations')])
+  const [sk, pr, cv] = await Promise.all([api('/skills'), api('/projects'), api('/conversations'), groupsReady])
   skills = sk ?? []; projects = pr ?? []; conversations = cv ?? []
   $('skillCount').textContent = String(skills.length)
   await refresh()

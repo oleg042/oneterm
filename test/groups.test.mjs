@@ -5,8 +5,7 @@
  *   node test/groups.test.mjs
  */
 import { GROUP_ID, validGroup, groupColor, newGroupId, railItems, memberMap,
-         liveGroupIds, branchGroup, visibleIds, dragUnit, dropLayout, locate,
-         resolveDrop } from '../groups.mjs'
+         liveGroupIds, branchGroup, dropLayout, locate, resolveDrop } from '../groups.mjs'
 
 let pass = 0, fail = 0
 const ok  = m => { console.log(`  \x1b[32m✓\x1b[0m ${m}`); pass++ }
@@ -47,10 +46,8 @@ eq(shape(railItems(L(['a', G], ['b', G], 'c', ['d', G], ['e', G]))),
    [[G, ['a', 'b']], 'c', [G, ['d', 'e']]], 'a split group draws as two runs instead of crashing')
 eq(shape(railItems(L(['a', 'x|~|y'], ['b', 'x|~|y']))), ['a', 'b'], 'an invalid id is no group')
 eq(railItems(L(['a', H], ['b', H]))[0].color, 1, 'a group carries its colour')
-/* Review focus 5: the collapsed state is keyed by group id, so closing the
-   head must leave the same id on the next tab — then it stays collapsed. */
 eq(shape(railItems(L(['m', G], ['n', G]))), [[G, ['m', 'n']]],
-   'closing the head of a group leaves it the same group, with the next tab on top')
+   'closing the top tab of a group leaves it the same group, colour and all')
 eq([...memberMap(L('a', ['b', G], ['c', G], ['d', H])).entries()], [['b', G], ['c', G]],
    'memberMap lists drawn group members only')
 eq(liveGroupIds(L(['a', G], ['b', G], ['c', H])), [G], 'a stale single id is not a live group')
@@ -63,19 +60,10 @@ bg.parentNeedsIt && GROUP_ID.test(bg.group) && bg.group[0] === '1'
 eq(branchGroup(S('p', G), [G], NOW, R0), { group: G, parentNeedsIt: false },
    'branching a grouped tab joins its group')
 
-// ── what is visible, and what a drag carries ────────────────────────────────
-const L4 = L('a', ['h', G], ['m', G], 'b', ['c', H], ['d', H], 'e')
-eq(visibleIds(L4, new Set([G])), ['a', 'h', 'b', 'c', 'd', 'e'], 'a collapsed group shows its head only')
-eq(dragUnit(L4, 'h', new Set([G])), { ids: ['h', 'm'], whole: true, group: G },
-   'dragging a collapsed head carries the whole group')
-eq(dragUnit(L4, 'h', new Set()), { ids: ['h'], whole: false, group: G },
-   'dragging an expanded head carries that tab alone')
-eq(dragUnit(L4, 'a', new Set()), { ids: ['a'], whole: false, group: null }, 'a plain tab is itself')
-
 // ── drop positions: the doorway ─────────────────────────────────────────────
 const at = (lay, i) => [lay.positions[i].gap, lay.positions[i].group]
 const L1 = L('x', ['h', G], ['m', G], ['n', G], 'y')
-const lay1 = dropLayout(L1, dragUnit(L1, 'n'), new Set())
+const lay1 = dropLayout(L1, 'n')
 eq(at(lay1, lay1.origin), [3, G], 'a member starts inside its group')
 const c1 = lay1.positions[lay1.origin].offset
 eq(at(lay1, locate(lay1, c1 + 0.2, lay1.origin).pos), [3, G], 'a short pull past the edge stays inside')
@@ -84,25 +72,15 @@ eq(at(lay1, locate(lay1, c1 + 0.5, lay1.origin).pos), [3, null],
 eq(at(lay1, locate(lay1, c1 + 1.5, lay1.origin).pos), [4, null], 'another row on and it is past y')
 
 const L2 = L(['h', G], ['m', G], ['n', G], 'y')
-const lay2 = dropLayout(L2, dragUnit(L2, 'h'), new Set())
+const lay2 = dropLayout(L2, 'h')
 eq(at(lay2, lay2.origin), [0, G], 'the head of a group at the very top starts inside')
 eq(at(lay2, locate(lay2, lay2.positions[lay2.origin].offset - 0.5, lay2.origin).pos), [0, null],
    'and leaves upward through the doorway even with nothing above it')
 
 const L3 = L('p', ['h', G], ['m', G], 'y')
-eq(dropLayout(L3, dragUnit(L3, 'p'), new Set()).positions.map(p => [p.gap, p.group]),
+eq(dropLayout(L3, 'p').positions.map(p => [p.gap, p.group]),
    [[0, null], [0, G], [1, G], [2, G], [2, null], [3, null]],
    'a plain tab passing a group goes join-at-top, inside, join-at-bottom, out')
-
-const lay4 = dropLayout(L4, dragUnit(L4, 'h', new Set([G])), new Set([G]))
-lay4.positions.every(p => p.group === null) && !lay4.positions.some(p => p.gap === 3)
-  ? ok('a whole collapsed group only lands outside, and hops over another group whole')
-  : bad(`whole-group positions: ${JSON.stringify(lay4.positions)}`)
-
-const L5 = L('x', ['h', G], ['m', G], 'y')
-dropLayout(L5, dragUnit(L5, 'x', new Set([G])), new Set([G])).positions.every(p => p.group === null)
-  ? ok('a collapsed group offers no inside to drop into — join it by holding over it')
-  : bad('collapsed group offered an inside position')
 
 // ── where the pointer is ────────────────────────────────────────────────────
 const rowH = lay1.rows.findIndex(r => r.id === 'h')
@@ -115,40 +93,36 @@ eq(at(lay1, locate(lay1, lay1.rows[rowH].to - 0.1, lay1.origin, () => true).pos)
 
 // ── what a drop does ────────────────────────────────────────────────────────
 const L6 = L('p', ['h', G], ['m', G], 'y')
-eq(resolveDrop(L6, dragUnit(L6, 'p'), { before: 'm', group: G }),
+eq(resolveDrop(L6, 'p', { before: 'm', group: G }),
    { ids: ['h', 'p', 'm', 'y'], groups: [G, G, G, ''] }, 'dropped between members, it joins')
-eq(resolveDrop(L1, dragUnit(L1, 'n'), { before: 'y', group: null }),
+eq(resolveDrop(L1, 'n', { before: 'y', group: null }),
    { ids: ['x', 'h', 'm', 'n', 'y'], groups: ['', G, G, '', ''] }, 'out through the bottom doorway')
-eq(resolveDrop(L2, dragUnit(L2, 'h'), { before: 'm', group: null }),
+eq(resolveDrop(L2, 'h', { before: 'm', group: null }),
    { ids: ['h', 'm', 'n', 'y'], groups: ['', G, G, ''] }, 'out through the top doorway')
 const L7 = L(['h', G], ['m', G], 'y')
-eq(resolveDrop(L7, dragUnit(L7, 'm'), { before: 'y', group: null }),
+eq(resolveDrop(L7, 'm', { before: 'y', group: null }),
    { ids: ['h', 'm', 'y'], groups: ['', '', ''] }, 'leaving a group of two leaves no group of one')
 const fresh = newGroupId([], NOW, R0)
-eq(resolveDrop(L('a', 'b', 'c'), dragUnit(L('a', 'b', 'c'), 'c'), { onto: 'a' }, NOW, R0),
+eq(resolveDrop(L('a', 'b', 'c'), 'c', { onto: 'a' }, NOW, R0),
    { ids: ['a', 'c', 'b'], groups: [fresh, fresh, ''] }, 'held over a plain tab: a new group, the dragged tab second')
 const L8 = L(['h', G], ['m', G], 'z')
-eq(resolveDrop(L8, dragUnit(L8, 'z'), { onto: 'h' }),
+eq(resolveDrop(L8, 'z', { onto: 'h' }),
    { ids: ['h', 'z', 'm'], groups: [G, G, G] }, 'held over a grouped tab: it joins, directly under it')
 const L9 = L(['a', G], 'b')
-const r9 = resolveDrop(L9, dragUnit(L9, 'b'), { onto: 'a' }, NOW, R0)
+const r9 = resolveDrop(L9, 'b', { onto: 'a' }, NOW, R0)
 r9.groups[0] === r9.groups[1] && r9.groups[0] !== G && validGroup(r9.groups[0])
   ? ok('held over a tab with a stale single id: a fresh group, not the stale one')
   : bad(`stale single: ${JSON.stringify(r9)}`)
-eq(resolveDrop(L4, dragUnit(L4, 'h', new Set([G])), { onto: 'b' }), null,
-   'a whole group cannot be held onto anything — groups never merge')
-eq(resolveDrop(L4, dragUnit(L4, 'h', new Set([G])), { before: 'e', group: null }),
-   { ids: ['a', 'b', 'c', 'd', 'h', 'm', 'e'], groups: ['', '', H, H, G, G, ''] },
-   'a collapsed group moves whole and keeps its id')
 const L10 = L(['h', G], ['m', G], 'p')
-eq(resolveDrop(L10, dragUnit(L10, 'p'), { before: 'm', group: null }),
+eq(resolveDrop(L10, 'p', { before: 'm', group: null }),
    { ids: ['h', 'p', 'm'], groups: [G, G, G] }, 'between two members is inside, whatever the caller said')
 const L11 = L(['h', G], ['m', G], ['c', H], ['d', H])
-eq(resolveDrop(L11, dragUnit(L11, 'c', new Set([H])), { before: 'm', group: null }), null,
-   'a whole group dropped inside another is refused — groups never nest')
-eq(resolveDrop(L1, dragUnit(L1, 'n'), { before: 'gone', group: null }), null,
+eq(resolveDrop(L11, 'c', { before: 'm', group: null }),
+   { ids: ['h', 'c', 'm', 'd'], groups: [G, G, G, ''] },
+   'a tab of one group dropped between two of another joins that one, and leaves no group of one behind')
+eq(resolveDrop(L1, 'n', { before: 'gone', group: null }), null,
    'a drop next to a tab that vanished meanwhile does nothing')
-eq(resolveDrop(L('a', ['b', 'junk']), dragUnit(L('a', ['b', 'junk']), 'a'), { before: null, group: null }).groups,
+eq(resolveDrop(L('a', ['b', 'junk']), 'a', { before: null, group: null }).groups,
    ['', ''], 'a garbage id on disk is written back as no group')
 
 // ── every drop leaves a sound rail ──────────────────────────────────────────
@@ -165,6 +139,7 @@ function sound(r, before){
   if (new Set(runs).size !== runs.length) return 'split group'
   return ''
 }
+const L4 = L('a', ['h', G], ['m', G], 'b', ['c', H], ['d', H], 'e')
 const LAYOUTS = [
   L1, L2, L3, L4, L6, L7, L8, L9, L10, L11,
   L('a', 'b', 'c'),
@@ -172,20 +147,16 @@ const LAYOUTS = [
   L(['a', G], 'b', ['c', G], ['d', G]),                     // a split group on disk
 ]
 let checked = 0, broken = []
-for (const lay of LAYOUTS) for (const col of [new Set(), new Set([G]), new Set([H]), new Set([G, H])]) {
-  for (const id of visibleIds(lay, col)) {
-    const unit = dragUnit(lay, id, col)
-    const d = dropLayout(lay, unit, col)
-    for (const p of d.positions) {
-      const r = resolveDrop(lay, unit, { before: p.before, group: p.group }, NOW, Math.random)
-      const why = sound(r, lay); checked++
-      if (why) broken.push(`${JSON.stringify(lay)} drag ${id} → ${JSON.stringify(p)}: ${why}`)
-    }
-    if (!unit.whole) for (const t of visibleIds(lay, col)) if (t !== id) {
-      const r = resolveDrop(lay, unit, { onto: t }, NOW, Math.random)
-      const why = sound(r, lay); checked++
-      if (why) broken.push(`${JSON.stringify(lay)} hold ${id} onto ${t}: ${why}`)
-    }
+for (const lay of LAYOUTS) for (const { id } of lay) {
+  for (const p of dropLayout(lay, id).positions) {
+    const r = resolveDrop(lay, id, { before: p.before, group: p.group }, NOW, Math.random)
+    const why = sound(r, lay); checked++
+    if (why) broken.push(`${JSON.stringify(lay)} drag ${id} → ${JSON.stringify(p)}: ${why}`)
+  }
+  for (const { id: t } of lay) if (t !== id) {
+    const r = resolveDrop(lay, id, { onto: t }, NOW, Math.random)
+    const why = sound(r, lay); checked++
+    if (why) broken.push(`${JSON.stringify(lay)} hold ${id} onto ${t}: ${why}`)
   }
 }
 broken.length ? bad(`${broken.length} of ${checked} drops left an unsound rail:\n      ` + broken.slice(0, 5).join('\n      '))

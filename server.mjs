@@ -346,15 +346,24 @@ function logState(s, why, tail) {
     + ` wait ${p.waiting ? 1 : 0}->${s.waiting ? 1 : 0}`
     + ` via ${why} | ${JSON.stringify(liveTail(tail, 3).slice(-180))}`)
 }
-let sessionCache = { at: 0, data: null }
+let sessionCache = { at: 0, data: null }, sessionGen = 0
 async function sessionsCached() {
   // /sessions costs one spawn per session (capture-pane). A short cache keeps a
   // second tab, or a double render, from multiplying that.
   if (Date.now() - sessionCache.at < 700 && sessionCache.data) return sessionCache.data
+  /* A read takes a while (a capture-pane per session), and a write can land
+     in the middle of it. That read may hold the layout from BEFORE the write:
+     serve it to whoever asked, but never cache it — cached, it was handed out
+     for the next 700ms, and a page that took it and then dropped a second tab
+     sent the old groups back and undid the first drop. */
+  const gen = sessionGen
   const data = await annotateWaiting(await listSessions())
-  sessionCache = { at: Date.now(), data }
+  if (gen === sessionGen) sessionCache = { at: Date.now(), data }
   return data
 }
+/* Every mutation, at its start AND its end: a read that began before or
+   during it is not cacheable. */
+function sessionsChanged() { sessionGen++; sessionCache = { at: 0, data: null } }
 
 async function annotateWaiting(list) {
   await Promise.all(list.map(async (s) => {
@@ -949,6 +958,9 @@ const server = createServer(async (req, res) => {
     console.error('[route error]', req.url, e?.message)
     if (!res.headersSent) res.writeHead(500, {'content-type':'application/json'})
     res.end(JSON.stringify({ error: String(e?.message ?? e) }))
+  } finally {
+    // The write is done (or failed): nothing read while it ran may be cached.
+    try { if (MUTATIONS.has(new URL(req.url, 'http://x').pathname)) sessionsChanged() } catch {}
   }
 })
 
@@ -995,7 +1007,7 @@ async function route(req, res) {
   if (p === '/projects') return json(res, await readProjects())
   if (p === '/conversations') return json(res, await readConversations())
 
-  if (MUTATIONS.has(p)) sessionCache = { at: 0, data: null }
+  if (MUTATIONS.has(p)) sessionsChanged()
   /* Claude Code's own lifecycle events, relayed by hooks/oneterm-agent-state.sh.
    * Already behind the same guard as every mutation: POST only, Host and Origin
    * allowlisted, so a random page cannot forge a session's state. */

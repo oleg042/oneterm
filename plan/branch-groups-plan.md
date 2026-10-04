@@ -28,6 +28,12 @@ with no framework.
 
 **Spec:** `plan/branch-groups.md`
 
+> **Changed mid-build (2026-10-04):** collapsing was dropped after the first
+> build was seen working, and the chip went with it. The collapse steps in
+> Tasks 3–4 (collapsed set, chip, `visibleIds`, `dragUnit`, whole-group moves)
+> were built, verified, then removed. `dropLayout` and `resolveDrop` take a
+> tab id instead of a unit. The spec describes what shipped.
+
 ## Global Constraints
 
 - Work only in the worktree `.claude/worktrees/branch-groups` (branch

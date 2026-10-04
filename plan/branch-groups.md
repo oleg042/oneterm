@@ -1,8 +1,14 @@
 # oneterm — branch groups in the rail
 
-Written 2026-10-04. Status: designed, not built.
+Written 2026-10-04. Status: built.
 
-Mockup: https://claude.ai/artifact/E6vrcozEQZGoTw1A36MAW3
+Mockup: https://claude.ai/artifact/E6vrcozEQZGoTw1A36MAW3. Its chip and
+collapsed frames predate the decision below and do not apply.
+
+**Decided 2026-10-04:** groups do **not** collapse. That was dropped after the
+first build, once groups were seen working. Without collapsing, the top tab's
+chip had no job left, so there is no chip either: a group is its line and its
+tint, and nothing else.
 
 ---
 
@@ -12,33 +18,27 @@ Branching puts a new tab directly under the one it came from, labelled
 `↳ <parent>`. That holds for about ten minutes. Then a branch gets renamed
 ("redis cache try"), something gets dragged between them, and the rail no longer
 says which tabs are the same piece of work. A **group** says it permanently:
-the tabs share a colour line and a faint tint, and the group collapses to one
-row when you are not looking at it.
+the tabs share a colour line and a faint tint.
 
 ## What a group is
 
 - A set of tabs that carry the same group id and sit **next to each other** in
   the rail. Order inside the group is ordinary rail order.
-- The **top tab** of a group is its head. There is no separate header row: the
-  head carries the group's chip. Whichever tab is on top is the head, so
-  moving or closing the head promotes the next one.
+- There is no header row, no chip and nothing to collapse. Every tab in a group
+  is an ordinary row, and every one is dragged on its own.
 - A group with **one** tab left is drawn as a plain tab. Its id stays on the
-  tab and is harmless; if the tab gets a sibling again it is that group again,
-  colour and all.
-- Groups have **no names**. There is no header row to put one in, and the head
-  tab's own name already says what the group is.
+  tab and is harmless; if the tab gets a sibling again through a branch, it is
+  that group again, colour and all.
+- Groups have **no names**. The tabs' own names already say what the group is.
 
 ## How it looks
 
-Drawn in the rail's existing tokens. The mockup is the reference.
+Drawn in the rail's existing tokens.
 
 | Part | Look |
 |---|---|
-| Group line | 2px, group colour at ~55%, in the rail's 10px left margin (x ≈ 3–5px), from the first row's top inset to the last row's bottom inset. Rows are **not** indented, so names keep their full width. |
-| Tint | The group colour at ~6% behind the whole group, 5px radius, 3px margin above and below the group. |
-| Chip | On the head's title line, after the `CC`/`SH` tag. Group colour on the group's soft colour, mono 9px, pill. Expanded: `<count> ▾`. Collapsed: `+<hidden> ●● ▸`. |
-| Mini dots | Collapsed only: one 5px dot per hidden tab, in the rail's status language (hollow idle, accent working, green done, amber waiting with the ping). At most 4; past that, the count says it. |
-| Collapsed head | Its dot is its own state. Its wash and left bar are the **group's**: the wash is "you are here" when the active tab is inside, else amber when any tab waits; the bar is amber if any tab waits, else accent if any works, else green if any finished unseen, else accent if the active tab is inside. Nothing that needs you can hide in a collapsed group. |
+| Group line | 2px, group colour at 55%, in the rail's 10px left margin (x ≈ 3–5px), from the first row's top inset to the last row's bottom inset. Rows are **not** indented, so names keep their full width. |
+| Tint | The group colour at 6% behind the whole group, 5px radius, 3px margin above and below the group. |
 
 The status colours are vermillion (working), amber (waiting) and green
 (done), so group colours keep clear of all three. Five colours, light / dark:
@@ -57,7 +57,7 @@ The status colours are vermillion (working), amber (waiting) and green
 
 | You do | Result |
 |---|---|
-| Branch a plain tab | The tab and its branch become a new group, branch under the tab |
+| Branch a plain tab | The tab and its branch become a new group, the branch under the tab |
 | Branch a tab that is in a group | The branch joins that group, directly under the tab it came from |
 | Drag a tab and **hold ~0.4s** over a plain tab | The two become a new group, the dragged tab second |
 | Drag a tab and hold over a tab that is in a group | The dragged tab joins that group, directly under the held-over tab |
@@ -76,46 +76,32 @@ let go:
 
 - It shows the group line on its left in the colour of the group it would land in, or none.
 - A pill in its top-right corner says `ungroup` (in the old group's colour) when the drop would take it out of a group, or `join` (in the new group's colour) when the drop would put it into one.
-- When armed for grouping (below), the tab underneath shows a dashed ring and a `group` pill.
+- When armed for grouping (below), the tab underneath shows a dashed ring and a `group` pill, in the colour the group will have.
+- Mid-drag, each member row carries its own share of the line and the tint, so they travel with the rows as the rows slide aside.
 
 ### Hold to group
 
-While dragging, the gap only moves once the held row's centre passes the
-**outer quarter** of a neighbour. In the neighbour's **middle half** the held
-row is *over* it, and nothing shifts. Hold there for 400ms and grouping arms.
-Moving more than a few px, or out of the middle half, disarms it. A quick drag
-straight past a tab only reorders, as today.
+While dragging, the held row is *over* a neighbour while its travel sits in
+that neighbour's **middle half**, and the gap stays where it was. Hold there
+for 400ms and grouping arms. Every few px of movement restarts the clock, so a
+slow drag past a tab never groups by accident. Leaving the middle half
+disarms it. Past the outer quarter, the gap moves as a reorder.
 
-Grouping never arms when:
-- the held-over tab is already in the dragged tab's group, which would change nothing, or
-- the drag is a whole collapsed group. **Groups never merge or nest.**
-
-A collapsed group being dragged only reorders. Its drop positions skip the
-inside of other groups, so it hops over them whole.
-
-### Collapsing
-
-- Click the chip to collapse or expand. Clicking the chip never switches tabs.
-- **What you see is what you drag.** Dragging the head of a *collapsed* group
-  moves the whole group, and its hidden tabs go with it. Dragging any tab of an
-  *expanded* group moves that tab alone.
-- **Switching to a hidden tab expands its group.** That covers a notification
-  click, a `/#<id>` link, ⌘⇧B creating a branch inside a collapsed group, and
-  anything else that goes through `switchTo`. You may still collapse the group
-  you are in: its head then carries "you are here".
+Grouping never arms over a tab already in the dragged tab's group, because
+that would change nothing. There, the middle half is no different from
+anywhere else.
 
 ## Where the state lives
 
 | State | Stored in | Why |
 |---|---|---|
 | Which group a tab is in | tmux user-option `@oneterm_group` on the tab's session, next to `@oneterm_order` and `@oneterm_label` | tmux is the source of truth. Groups survive reloads, host restarts and crashes, every browser window sees the same ones, and a group can never outlive its tabs. |
-| Collapsed / expanded | `localStorage['oneterm-collapsed']`, a JSON array of group ids | A viewing preference, like theme and sound. Ids of groups no longer in the rail are pruned on paint. |
 
 **The group id** is `<colour>.<base36 time><2 random base36>`, for example
 `2.lq3k9xa7`, and must match `/^[0-4]\.[0-9a-z]{6,14}$/`. The colour lives in
 the id, so it needs no storage of its own and a group keeps it for life. A
-new group takes the colour used by the **fewest** existing groups; ties go to
-the lowest index.
+new group takes the colour used by the **fewest** live groups; ties go to the
+lowest index.
 
 ## `groups.mjs`: the pure parts
 
@@ -124,114 +110,118 @@ ships. Unlike `branch.mjs` it also runs **in the page**. The drag logic lives
 here, so the code that decides where a drop lands is the code under test.
 
 - `GROUP_ID`: the regex above, shared by the server's validation and the tests.
-- `newGroupId(existingIds, now, rand)` returns a fresh id with the least-used colour.
-- `groupColor(id)` returns the colour index, or `null` for anything invalid.
+- `validGroup(g)`, `groupColor(id)`.
+- `newGroupId(liveIds, now, rand)` returns a fresh id in the least-used colour.
 - `railItems(sessions)` returns the rail as `{ kind: 'tab', s }` and
   `{ kind: 'group', id, color, members }`, where a group is a **contiguous run
-  of ≥2** tabs with the same valid id. A split group, which should never happen,
+  of ≥2** tabs with the same valid id. A split group, which no drop produces,
   draws as two runs rather than crashing.
-- `branchGroup(parent, existingIds, now, rand)` returns
+- `memberMap(sessions)` maps each tab that is drawn in a group to its group.
+  `liveGroupIds(sessions)` lists the drawn groups.
+- `branchGroup(parent, liveIds, now, rand)` returns
   `{ group, parentNeedsIt }`: the parent's group, or a new one that the parent
   must also be given.
-- `dropPositions(items, dragUnit)` returns the ordered drop positions, each
-  `{ index, group, cost }`. Doorways are the half-cost positions at group
-  edges. `dragUnit` is one tab, or a collapsed group's whole run.
-- `resolveDrop(sessions, dragUnit, position | { onto: id }, now, rand)` returns
-  `{ ids, groups }`: the full new rail order, plus the group (or `''`) for
-  every tab, parallel to `ids`. It handles join, leave, new group by hold, and
-  whole-group moves, and leaves no group with one tab and no split group.
+- `dropLayout(sessions, id)` returns `{ positions, rows, origin }`:
+  - every place tab `id` can land, each `{ gap, before, group, offset }`;
+    doorways are the half-row states at group edges
+  - each other row's stretch of travel
+  - where the tab already is
+- `locate(layout, c, cur, holdable)` returns `{ pos, over }` for travel `c`.
+- `resolveDrop(sessions, id, target, now, rand)` returns `{ ids, groups }`, or
+  `null` when the tab or its landing neighbour has vanished:
+  - the full new rail order, plus every tab's group (`''` for none), parallel to `ids`
+  - `target` is `{ before, group }`, or `{ onto }` for a hold
+  - between two members of one group is always inside it
+  - the result never has a group of one or a split group
 
 ## Host (`server.mjs`)
 
-- **`listSessions`** reads `#{@oneterm_group}` as a tenth field (`FIELDS` 9 → 10)
-  and returns `group`, which is `null` unless it matches `GROUP_ID`.
+- **`listSessions`** reads `#{@oneterm_group}` as a tenth field and returns
+  `group`, which is `null` unless it matches `GROUP_ID`.
 - **`/reorder`** accepts an optional `groups=` list parallel to `ids=`
   (comma-separated, an empty slot means no group).
   - Every non-empty slot must match `GROUP_ID`, and `groups` must be as long as
     `ids`. Otherwise the route returns **400** `bad_groups` and writes nothing.
-  - It writes the order exactly as now, through `writeOrder`. It sets or
-    unsets `@oneterm_group` only where the value changed (it lists sessions
-    first).
-  - Without `groups=` it behaves exactly as today, so an old page open in
-    another window cannot wipe groups.
-- **`/branch`** calls `branchGroup` after the session exists. It sets the
-  group on the branch, and on the parent too when the group is new. Placement
-  is unchanged (`orderAfter`), and that keeps the group contiguous.
-- **Serving `groups.mjs`**: a fixed route `/groups.mjs` →
-  `ROOT/groups.mjs`, plus `'.mjs': 'text/javascript'` in `TYPES`. A module
-  served as `text/plain` is refused by the browser.
+  - It writes the order exactly as before, through `writeOrder`. It sets or
+    unsets `@oneterm_group` only where the value changed.
+  - Without `groups=` it behaves exactly as it always did, so an old page open
+    in another window cannot wipe groups.
+- **`/branch`** calls `branchGroup` after placing the branch. It sets the group
+  on the branch, and on the parent too when the group is new.
+- **Serving `groups.mjs`**: the route `/groups.mjs` serves `ROOT/groups.mjs`
+  as `text/javascript` (`'.mjs'` in `TYPES`).
+- **The `/sessions` cache and writes** (found while building this):
+  - Every mutation now bumps a generation, at its start and again at its end.
+  - A `/sessions` read that overlapped one is served to whoever asked, but is not cached.
+  - Before this, a read that began before a `/reorder` could cache the old
+    layout for 700ms. A second drag made in that window then sent the old
+    groups back, undoing the first drop.
 
 ## Client (`public/index.html`)
 
-- **Loading the module**: the inline script stays classic. It does
-  `import('/groups.mjs')` at start-up and repaints when the module arrives.
-  Until then, or if it fails, the rail paints flat exactly as today, so a
-  missing module can never cost you the rail.
-- **`paintRail`** renders `railItems`: a `.grp` wrapper holding the line, the
-  tint and the member rows, the head's chip, and collapsed heads with their
-  mini dots and group wash. Every row stays a `.sess`, and its handlers are
-  unchanged.
-- **`refresh`** adds `s.group` to the rail signature, so a group change made in
-  another window repaints this one.
+- **Loading the module**: the inline script stays classic and starts
+  `import('/groups.mjs')` up front. Start-up waits for it alongside the
+  skills, projects and conversations fetches. If it fails, the rail paints
+  flat exactly as it did before groups, so a missing module costs the
+  grouping, never the rail.
+- **`paintRail`** renders `railItems`: each group is a `.grp` wrapper,
+  `data-c` = its colour, holding its member rows. Every row is still a `.sess`
+  built by `rowEl(s)`, with its handlers unchanged.
+- **`refresh`**:
+  - adds `s.group` to the rail signature
+  - drops a poll that was in flight across a layout write. `writeLayout`
+    bumps `layoutSeq` on both sides of the POST; a poll that saw it change
+    may hold the layout from before the drop.
 - **Drag** (`beginDrag` / `onDragMove` / `layoutGap` / `endDrag`):
-  - Rows are collected as the visible `.sess` in order, not the list's
-    children (groups wrap theirs).
-  - The step-to-index mapping goes through `dropPositions`, so doorways cost
-    half a row.
-  - The held row's preview is the group line plus the `ungroup` / `join` pill.
-  - Hold-to-group uses a 400ms timer, armed only while the centre stays in a
-    neighbour's middle half.
-  - The drop goes through `resolveDrop`. Then it updates optimistically, as
-    now, and POSTs `/reorder?ids=…&groups=…`.
-- **Collapse**: a click on the chip toggles the id in
-  `localStorage['oneterm-collapsed']` (wrapped in try/catch, like the rest of
-  the page's storage) and repaints. `switchTo(id)` removes the id's group from
-  the set first.
+  - rows are collected as `.sess`, not the list's children, because groups wrap theirs
+  - one row of travel is the held row's own height + 1
+  - travel goes through `dropLayout` and `locate`
+  - the preview is `paintPreview`; the hold timer is `trackHold`
+  - the drop is `dropGrouped`: `resolveDrop`, applied optimistically, then
+    `writeLayout('/reorder?ids=…&groups=…')`
 
 ## Known limits
 
-- **Collapsed state is per browser profile.** Another Chrome profile shows the
-  same groups, expanded.
 - **A drag in a stale window.** The page sends the whole layout, so a drop in
-  a window that has not polled since another window changed the groups writes
-  its older view, the same last-writer-wins `/reorder` has today. The 4s poll
-  keeps that window short.
-- **Rows inside a group have the same width as rows outside it.** The line and
-  tint carry the grouping, so nothing is indented and no name is shortened.
+  a window whose last poll predates another window's change writes its older
+  view. That is the same last-writer-wins `/reorder` always had, and the 1.5s
+  poll keeps the window short.
+- **No moving a group as a block.** Every tab moves on its own; moving a group
+  is moving its tabs.
 
 ## Not in this change
 
+- Collapsing, a chip, or any header row (decided against, above).
 - Group names or rename.
-- Keyboard shortcuts for grouping, ungrouping or collapsing.
+- Keyboard shortcuts for grouping or ungrouping.
 - A "close the whole group" action.
-- Syncing collapsed state through tmux.
 
 ## Verification
 
-- **`test/groups.test.mjs`**, in the repo's `ok()` / `bad()` style. Added to
-  `bin/reload.sh`'s gate and to CI (pure, so it needs no tmux). It covers:
-  - `railItems`: plain tabs, a group, a group of one drawn plain, a split group drawn as two runs, invalid ids ignored.
-  - `newGroupId`: least-used colour, ties, format matches `GROUP_ID`.
-  - `branchGroup`: a plain parent gets a new group for both, a grouped parent shares its group.
-  - `resolveDrop`:
-    - join between members
-    - leave through the top and the bottom doorway
-    - stay inside at the edge
-    - a group at the top of the rail
-    - hold onto a plain tab makes a new group
-    - hold onto a grouped tab joins it, under that tab
-    - moving a collapsed group keeps it whole and hops over other groups
-    - hold onto a tab of your own group, or with a collapsed group, does nothing
-    - no result ever leaves a group with one tab or a split group
-- **`test/e2e-branch.sh`** grows two checks:
-  - After a branch of a plain tab, both tabs report the same valid `group`.
-  - A branch of that branch reports it too.
-- **`/reorder` with a bad `groups=`** returns 400 and changes nothing (e2e).
-- **By hand, in the real app** on a second host on port 7332 from the worktree:
-  - branch twice
-  - collapse and expand
-  - drag out through each doorway and back in
+- **`test/groups.test.mjs`**, in the repo's `ok()` / `bad()` style, is gated
+  in `bin/reload.sh` and run in CI. It covers:
+  - ids and colours: least-used colour, ties, the minted format
+  - `railItems`, including a group of one and a split group
+  - `branchGroup`
+  - the doorway in both directions, including at the top of the rail
+  - `locate`'s "over"
+  - every kind of drop
+  - a sweep of every possible drop across 13 layouts: none leaves a group of
+    one or a split group
+- **`test/e2e-branch.sh`** additionally checks:
+  - a branch and its parent share a valid group, and a branch of a branch shares it too
+  - membership is the tmux option
+  - a reorder without `groups=` keeps groups
+  - a malformed or misaligned `groups=` is 400 and writes nothing
+  - a blank slot ungroups one tab without touching the others
+  - `/groups.mjs` is served as JavaScript
+- **By hand in a browser**, against a host on 7332 from the worktree with its
+  own tmux server (`env -u TMUX TMUX_TMPDIR=<short dir>`), so the real rail
+  was never touched:
+  - branching forms groups in distinct colours
+  - out through the bottom and the top doorway
+  - into a group between members and at its edge
   - hold-to-group on a plain tab and on a grouped tab
-  - move a collapsed group
-  - a waiting tab inside a collapsed group turns the head amber
-  - the rail in dark mode
+  - two drags back to back, the race that found the cache bug
+  - the join / ungroup / group previews mid-drag
+  - dark mode
