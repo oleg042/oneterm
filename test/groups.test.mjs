@@ -5,7 +5,7 @@
  *   node test/groups.test.mjs
  */
 import { GROUP_ID, validGroup, groupColor, newGroupId, railItems, memberMap,
-         liveGroupIds, branchGroup, dropLayout, locate, resolveDrop } from '../groups.mjs'
+         liveGroupIds, branchGroup, dropLayout, locate, holdCheck, resolveDrop } from '../groups.mjs'
 
 let pass = 0, fail = 0
 const ok  = m => { console.log(`  \x1b[32m✓\x1b[0m ${m}`); pass++ }
@@ -78,15 +78,15 @@ const L1 = L('x', ['h', G], ['m', G], ['n', G], 'y')
 const lay1 = dropLayout(L1, 'n')
 eq(at(lay1, lay1.origin), [3, G], 'a member starts inside its group')
 const c1 = lay1.positions[lay1.origin].offset
-eq(at(lay1, locate(lay1, c1 + 0.2, lay1.origin).pos), [3, G], 'a short pull past the edge stays inside')
-eq(at(lay1, locate(lay1, c1 + 0.5, lay1.origin).pos), [3, null],
+eq(at(lay1, locate(lay1, c1 + 0.2)), [3, G], 'a short pull past the edge stays inside')
+eq(at(lay1, locate(lay1, c1 + 0.5)), [3, null],
    'half a row past the bottom edge and it is out — the doorway')
-eq(at(lay1, locate(lay1, c1 + 1.5, lay1.origin).pos), [4, null], 'another row on and it is past y')
+eq(at(lay1, locate(lay1, c1 + 1.5)), [4, null], 'another row on and it is past y')
 
 const L2 = L(['h', G], ['m', G], ['n', G], 'y')
 const lay2 = dropLayout(L2, 'h')
 eq(at(lay2, lay2.origin), [0, G], 'the head of a group at the very top starts inside')
-eq(at(lay2, locate(lay2, lay2.positions[lay2.origin].offset - 0.5, lay2.origin).pos), [0, null],
+eq(at(lay2, locate(lay2, lay2.positions[lay2.origin].offset - 0.5)), [0, null],
    'and leaves upward through the doorway even with nothing above it')
 
 const L3 = L('p', ['h', G], ['m', G], 'y')
@@ -94,27 +94,37 @@ eq(dropLayout(L3, 'p').positions.map(p => [p.gap, p.group]),
    [[0, null], [0, G], [1, G], [2, G], [2, null], [3, null]],
    'a plain tab passing a group goes join-at-top, inside, join-at-bottom, out')
 
-// ── where the pointer is ────────────────────────────────────────────────────
-const rowH = lay1.rows.findIndex(r => r.id === 'h')
-const mid = (lay1.rows[rowH].from + lay1.rows[rowH].to) / 2
-const beside = lay1.positions.findIndex(p => p.gap === 2)      // the gap right under h
-eq(locate(lay1, mid, beside, () => true), { pos: beside, over: rowH },
-   'the middle half of a tab you could group with, beside the gap, is "over" it, and nothing moves')
-eq(locate(lay1, mid, lay1.origin, () => true).over, null,
-   'a row the gap is not beside is never "over" — the gap catches up first')
-eq(locate(lay1, mid, lay1.origin, () => false).over, null, 'a tab you cannot group with is never "over"')
-eq(at(lay1, locate(lay1, lay1.rows[rowH].to - 0.1, lay1.origin, () => true).pos), [2, G],
-   'past the outer quarter the gap moves after all')
-/* Review: a fast flick samples the pointer about once a frame, and every
-   sample can land mid-row. "Over" only counts beside the gap, or the gap
-   never leaves the start. */
-const flickL = L('a', 'b', 'c', 'd', 'e', 'f')
-const flay = dropLayout(flickL, 'a')
-let fcur = flay.origin
-for (const c of [0.5, 1.5, 2.5, 3.5, 4.5]) fcur = locate(flay, c, fcur, () => true).pos
-flay.positions[fcur].gap >= 4
-  ? ok('a fast flick that samples mid-row on every row still carries the gap along')
-  : bad(`flick left the gap at ${flay.positions[fcur].gap}`)
+// ── where the pointer is: over a tab, judged on screen ──────────────────────
+/* Rows 50px tall; the dragged tab 'a' starts at the top, its centre at 25. */
+const P = L('a', 'b', 'c', 'd')
+const play = dropLayout(P, 'a')                       // gap 0 sits above b
+const rowAt = (r, top, holdable = true) => ({ r, top, bottom: top + 49, holdable })
+const nextFor = mid => locate(play, play.positions[play.origin].offset + (mid - 25) / 50)
+/* Review of real use: dragged SQUARELY onto b — centre on b's centre — used to
+   read as "past b" and slide b away. It must be over b, gap unmoved. */
+eq(holdCheck(play, play.origin, nextFor(75), 75, null, rowAt(0, 50)), { pos: play.origin, over: 0 },
+   'a tab dragged squarely onto the next one is over it, and that one holds still')
+eq(holdCheck(play, play.origin, nextFor(58), 58, null, rowAt(0, 50)), { pos: play.origin, over: null },
+   'short of its middle the tab does not slide away yet — it waits to be landed on')
+eq(play.positions[holdCheck(play, play.origin, nextFor(92), 92, null, rowAt(0, 50)).pos].gap, 1,
+   'past its middle the gap moves on: an ordinary reorder')
+eq(holdCheck(play, play.origin, nextFor(75), 75, null, rowAt(0, 50, false)).over, null,
+   'a tab it cannot group with (already in its group) is never "over"')
+eq(play.positions[holdCheck(play, play.origin, nextFor(80), 80, null, rowAt(0, 50, false)).pos].gap, 1,
+   '…and reorders past it as it always did')
+/* A fast flick: the pointer is sampled about once a frame, and travel jumps
+   several rows at once — the gap must go with it. */
+const far = nextFor(25 + 4 * 50)
+eq(play.positions[holdCheck(play, play.origin, far, 225, null, rowAt(0, 50)).pos].gap, 3,
+   'a fast flick far past the next tab carries the gap along')
+/* Doorway check: travel units charge half a row at a group edge, so they
+   cannot be what decides "over" — here travel alone would already have
+   crossed the head of the group while the eye is still lining up on it. */
+const PD = L('p', ['h', G], ['m', G], 'y')
+const pdl = dropLayout(PD, 'p')
+const pnext = locate(pdl, pdl.positions[pdl.origin].offset + 1.05)
+eq(holdCheck(pdl, pdl.origin, pnext, 75, null, rowAt(0, 50)).over, 0,
+   'onto the top tab of a group, the doorway does not throw the aim off')
 
 // ── what a drop does ────────────────────────────────────────────────────────
 const L6 = L('p', ['h', G], ['m', G], 'y')

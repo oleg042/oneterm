@@ -110,29 +110,48 @@ export function dropLayout(sessions, id){
 }
 
 /**
- * Where travel `c` (in rows, on the layout's scale) puts the drag.
- *
- * In the middle half of a row it is OVER that tab, provided it is one the
- * dragged tab could group with and the gap is right beside it: the gap stays
- * where it was, which is what lets a hold land on a tab instead of the tab
- * sliding out from under it. "Right beside" matters for a fast flick — the
- * pointer is sampled about once a frame and can land mid-row on every row it
- * passes, and without it the gap stayed behind at the start. Anywhere else it
- * is the nearest position.
+ * The nearest position to travel `c` (in rows, on the layout's scale). Pure
+ * reordering: whether the drag is OVER a tab is a question about what is on
+ * screen, so it is `holdCheck`'s, in pixels.
  */
-export function locate(layout, c, cur, holdable = () => false){
-  const gap = layout.positions[cur]?.gap
-  for (let r = 0; r < layout.rows.length; r++){
-    const { from, to } = layout.rows[r], q = (to - from) / 4
-    // row r sits between gap r and gap r+1
-    if (c > from + q && c < to - q && (gap === r || gap === r + 1) && holdable(r)) return { pos: cur, over: r }
-  }
+export function locate(layout, c){
   let pos = 0, best = Infinity
   layout.positions.forEach((p, i) => {
     const d = Math.abs(p.offset - c)
     if (d < best){ best = d; pos = i }
   })
-  return { pos, over: null }
+  return pos
+}
+
+/**
+ * Hold-to-group, decided on screen: `mid` is the held row's centre, and
+ * `above` / `below` the rows beside the gap as drawn right now —
+ * `{ r, top, bottom, holdable }`, or null. `cur` is the current position and
+ * `next` the one travel alone picks (`locate`).
+ *
+ * - The held row's centre in the middle half of a tab it could group with:
+ *   OVER that tab, and the gap stays put.
+ * - Short of that middle, the gap does not cross such a tab, so the tab
+ *   holds still to be landed on; past it, the gap moves on as a reorder. It
+ *   is how a phone's home screen tells "make a folder" from "rearrange".
+ * - A tab it could not group with reorders as it always did.
+ *
+ * Travel units cannot answer this. They charge half a row extra at a group's
+ * edge, so they drift from the pixels the eye is lining up, and when "over"
+ * was measured in them a tab dragged squarely onto another had already slid
+ * that tab out of the way.
+ */
+export function holdCheck(layout, cur, next, mid, above, below){
+  for (const b of [below, above]){
+    if (!b?.holdable) continue
+    const q = (b.bottom - b.top) / 4
+    if (mid > b.top + q && mid < b.bottom - q) return { pos: cur, over: b.r }
+  }
+  const g = layout.positions[cur].gap, ng = layout.positions[next].gap
+  const q = b => (b.bottom - b.top) / 4
+  if (below?.holdable && ng > g && mid <= below.bottom - q(below)) return { pos: cur, over: null }
+  if (above?.holdable && ng < g && mid >= above.top + q(above)) return { pos: cur, over: null }
+  return { pos: next, over: null }
 }
 
 /**

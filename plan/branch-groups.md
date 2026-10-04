@@ -82,17 +82,21 @@ let go:
 
 ### Hold to group
 
-While dragging, the held row is *over* a neighbour while its travel sits in
-that neighbour's **middle half** and the gap is right beside that neighbour;
-the gap then stays where it was. "Right beside" keeps a fast flick, sampled
-mid-row on every row it crosses, from leaving the gap behind. Hold there
-for 400ms and grouping arms. Every few px of movement restarts the clock, so a
-slow drag past a tab never groups by accident. Leaving the middle half
-disarms it. Past the outer quarter, the gap moves as a reorder.
+**Over a tab is judged on screen** (`holdCheck`): the held row's centre lies
+in the middle half of a neighbouring tab as drawn right now.
 
-Grouping never arms over a tab already in the dragged tab's group, because
-that would change nothing. There, the middle half is no different from
-anywhere else.
+- **Hold there for 400ms** and grouping arms. Every few px of movement restarts the clock, so a slow drag past a tab never groups by accident. Leaving the middle half disarms it.
+- **Armed:**
+  - The held row turns see-through, so the tab under it shows its dashed ring.
+  - The `group` pill sits on the held row, where nothing can cover it, in the colour the group will have.
+- **A tab you could group with holds still** until the held row's centre passes its middle; only then does it slide aside as a reorder. A phone's home screen tells "make a folder" from "rearrange" the same way.
+- **A tab already in the dragged tab's group** reorders as it always did, and is never "over".
+
+**Fixed 2026-10-04, after real use:** "over" was first measured in travel
+units, the layout's rows-of-travel scale. Those charge half a row extra at
+group edges and are offset from the pixels the eye lines up, so a tab dragged
+squarely onto another had already slid it away. The armed ring was also
+hidden under the opaque held row.
 
 ## Where the state lives
 
@@ -129,7 +133,9 @@ here, so the code that decides where a drop lands is the code under test.
     doorways are the half-row states at group edges
   - each other row's stretch of travel
   - where the tab already is
-- `locate(layout, c, cur, holdable)` returns `{ pos, over }` for travel `c`.
+- `locate(layout, c)` returns the nearest position to travel `c`.
+- `holdCheck(layout, cur, next, mid, above, below)` returns `{ pos, over }`,
+  judged in pixels against the rows beside the gap.
 - `resolveDrop(sessions, id, target, now, rand)` returns `{ ids, groups }`, or
   `null` when the tab or its landing neighbour has vanished:
   - the full new rail order, plus every tab's group (`''` for none), parallel to `ids`

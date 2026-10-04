@@ -192,7 +192,9 @@ html[data-theme="dark"]{--g0:#8FA8CC;--g1:#C99BBE;--g2:#86B7BE;--g3:#A99BD6;--g4
 .sess .dp{position:absolute;top:7px;right:7px;padding:1px 7px 2px;border-radius:99px;
   font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;font-style:normal;pointer-events:none;
   color:var(--gc);background:color-mix(in srgb,var(--gc) 15%,var(--rail))}
-.sess.hold{outline:1.5px dashed var(--gc);outline-offset:-1.5px}
+.sess.hold{outline:1.5px dashed var(--gc);outline-offset:-1.5px;
+  background-image:linear-gradient(color-mix(in srgb,var(--gc) 12%,transparent),color-mix(in srgb,var(--gc) 12%,transparent))}
+.sess.drag-src.grouping{opacity:.55}
 /* Mid-drag, rows slide by transform while the group's wrapper stays where it
    was — so its tint and line would sit one row off from the rows they mark.
    For the length of a drag each member row carries its own share instead,
@@ -992,11 +994,12 @@ function beginDrag(e, el, id){
   /* One row's travel. Taken from the held row itself rather than the gap
      between the first two: a group's margin sits between some rows and not
      others, and the rows that slide aside move by the held row's own height. */
-  const step = el.getBoundingClientRect().height + 1
-  drag = { id, el, rows, idx, to: idx, step, startY: e.clientY, moved: false }
+  const box = el.getBoundingClientRect()
+  const step = box.height + 1
+  drag = { id, el, rows, idx, to: idx, step, startY: e.clientY, mid0: box.top + box.height / 2, moved: false }
   /* With groups, travel maps onto groups.mjs's drop positions: each group
-     edge costs half a row more (the doorway), and the middle of a tab you
-     could group with holds the gap still. Without the module: rows, as ever. */
+     edge costs half a row more (the doorway), and a tab you could group with
+     holds still while you are over its middle. Without the module: rows, as ever. */
   if (G){
     const layout = G.dropLayout(sessions, id), gm = G.memberMap(sessions)
     Object.assign(drag, { layout, gm, group: gm.get(id) ?? null, pos: layout.origin, hold: null })
@@ -1037,7 +1040,16 @@ function onDragMove(e){
   }
   const { layout } = drag
   const c = layout.positions[layout.origin].offset + dy / drag.step
-  const { pos, over } = G.locate(layout, c, drag.pos, holdable)
+  /* Over a tab is judged on screen: the held row's centre against the rows
+     either side of the gap, where they are drawn right now (mid-slide too). */
+  const g = layout.positions[drag.pos].gap
+  const side = r => {
+    if (r < 0 || r >= layout.rows.length) return null
+    const t = rowById(layout.rows[r].id); if (!t) return null
+    const b = t.getBoundingClientRect()
+    return { r, top: b.top, bottom: b.bottom, holdable: holdable(r) }
+  }
+  const { pos, over } = G.holdCheck(layout, drag.pos, G.locate(layout, c), drag.mid0 + dy, side(g - 1), side(g))
   drag.pos = pos
   const to = layout.positions[pos].gap
   if (to !== drag.to){ drag.to = to; layoutGap() }
@@ -1066,27 +1078,31 @@ function disarmHold(){
   if (!drag?.hold) return
   clearTimeout(drag.hold.timer)
   const t = rowById(drag.layout.rows[drag.hold.r].id)
-  if (t){ t.classList.remove('hold'); t.querySelector(':scope > .dp')?.remove(); delete t.dataset.c }
+  if (t){ t.classList.remove('hold'); delete t.dataset.c }
   drag.hold = null
+  drag.el.classList.remove('grouping')
 }
 /* The held row is the preview: the line of the group it would land in, and a
    pill when the drop changes its group — `join` in the new group's colour,
-   `ungroup` in the old one's. Armed over a tab, that tab wears the dashed
-   ring and the pill instead, in the colour the group will have. */
+   `ungroup` in the old one's. Armed over a tab, the held row turns see-through
+   so the tab underneath shows its dashed ring — the held row sits squarely on
+   top of it, and an opaque one hid the very thing that says "armed" — and the
+   pill, on the held row where nothing can cover it, says `group`, in the
+   colour the group will have. */
 function paintPreview(){
   const { el, layout, hold } = drag
-  let line = null, pill = null, pillColor = null
+  let line = null, pill = null, colorIdx = null
+  el.classList.toggle('grouping', !!hold?.armed)
   if (hold?.armed){
     const t = rowById(layout.rows[hold.r].id), tg = drag.gm.get(layout.rows[hold.r].id)
-    const color = tg ? G.groupColor(tg) : Number(G.newGroupId(G.liveGroupIds(sessions))[0])
-    if (t && !t.classList.contains('hold')){
-      t.classList.add('hold'); t.dataset.c = color
-      const p = document.createElement('i'); p.className = 'dp'; p.textContent = 'group'; t.appendChild(p)
-    }
+    colorIdx = tg ? G.groupColor(tg) : Number(G.newGroupId(G.liveGroupIds(sessions))[0])
+    if (t){ t.classList.add('hold'); t.dataset.c = colorIdx }
+    pill = 'group'
   } else {
     const g = layout.positions[drag.pos].group
     line = g
-    if (g !== drag.group){ pill = g ? 'join' : 'ungroup'; pillColor = g ?? drag.group }
+    if (g !== drag.group){ pill = g ? 'join' : 'ungroup'; colorIdx = G.groupColor(g ?? drag.group) }
+    else if (g) colorIdx = G.groupColor(g)
   }
   let dl = el.querySelector(':scope > .dl'), dp = el.querySelector(':scope > .dp')
   if (line){
@@ -1096,8 +1112,7 @@ function paintPreview(){
     if (!dp){ dp = document.createElement('i'); dp.className = 'dp'; el.appendChild(dp) }
     dp.textContent = pill
   } else dp?.remove()
-  const color = pill ? pillColor : line
-  if (color) el.dataset.c = G.groupColor(color); else delete el.dataset.c
+  if (colorIdx !== null) el.dataset.c = colorIdx; else delete el.dataset.c
 }
 
 /* Everything between the origin and the target shifts by one row, opening a
@@ -1129,7 +1144,7 @@ async function endDrag(e){
     r.style.transform = ''
     r.classList.remove('hold'); r.querySelectorAll(':scope > .dl, :scope > .dp').forEach(x => x.remove())
   }
-  d.el.classList.remove('drag-src')
+  d.el.classList.remove('drag-src', 'grouping')
   document.body.classList.remove('rail-dragging')
   const owed = railOwed; railOwed = false
   if (!d.moved){ dragId = null; if (owed) paintRail(); return }   // it was a click after all
