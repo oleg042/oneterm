@@ -33,6 +33,9 @@ import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agent
 // What a branch is called, which conversation it forks and where it lands —
 // pure, so test/branch.test.mjs runs the decisions that ship.
 import { branchLabel, conversationIdFromTranscript, orderAfter, CONV_ID } from './branch.mjs'
+// Which tabs are a group and where a drop lands. The page imports this same
+// file from /groups.mjs, so the host and the drag share one set of rules.
+import { validGroup, liveGroupIds, branchGroup } from './groups.mjs'
 // The awake switch: reading pmset, and the exact commands its sudoers rule allows.
 import { parseSleepDisabled, pmsetArgs, PMSET, sudoersRule, rootInstallCommand, osascriptArgs } from './sleep.mjs'
 import { userInfo } from 'node:os'
@@ -68,21 +71,24 @@ async function listSessions() {
   const D = '|~|'
   const fmt = ['#{session_name}', '#{session_created}', '#{session_attached}',
                '#{@oneterm_label}', '#{@oneterm_cwd}', '#{@oneterm_cmd}',
-               '#{@oneterm_skip}', '#{@oneterm_order}',
+               '#{@oneterm_skip}', '#{@oneterm_order}', '#{@oneterm_group}',
                '#{pane_current_path}'].join(D)
   const out = await tmux(['list-sessions', '-F', fmt])
-  const FIELDS = 9
+  const FIELDS = 10
   return out.split('\n').filter(l => l.startsWith(PREFIX)).map(line => {
     const parts = line.split(D)
     // A row with the wrong field count means something injected the delimiter.
     // Drop it rather than render shifted fields as if they were real.
     if (parts.length !== FIELDS) { console.warn('[skip malformed row]', parts[0]); return null }
-    const [name, created, attached, label, cwd, cmd, skip, order, livePath] = parts
+    const [name, created, attached, label, cwd, cmd, skip, order, group, livePath] = parts
     return { id: name.slice(PREFIX.length), name,
              created: Number(created) * 1000, attached: attached !== '0',
              label: label || name, cmd: cmd || 'shell',
              skip: skip === '1',
              order: order === '' || order === undefined ? null : Number(order),
+             // Exactly the minted shape or nothing: a hand-set or garbage
+             // value is no group, never something the page has to guess at.
+             group: validGroup(group) ? group : null,
              // THE path. A login shell can cd away from tmux's -c, so the
              // requested cwd is a wish and pane_current_path is the fact.
              // Showing the wish is how `rm -rf build/` hits the wrong tree.
@@ -912,7 +918,7 @@ const VENDOR = {
   '/vendor/addon-canvas.js': '@xterm/addon-canvas/lib/addon-canvas.js',
   '/vendor/addon-search.js': '@xterm/addon-search/lib/addon-search.js',
 }
-const TYPES = { '.html':'text/html', '.css':'text/css', '.js':'text/javascript',
+const TYPES = { '.html':'text/html', '.css':'text/css', '.js':'text/javascript', '.mjs':'text/javascript',
                 '.json':'application/json', '.png':'image/png', '.svg':'image/svg+xml',
                 '.woff2':'font/woff2' }
 
@@ -1106,7 +1112,26 @@ async function route(req, res) {
     }
   }
   if (p === '/reorder') {
-    await writeOrder((url.searchParams.get('ids') || '').split(',').filter(Boolean))
+    const ids = (url.searchParams.get('ids') || '').split(',').filter(Boolean)
+    /* Groups ride along as a list parallel to ids, '' for none. WITHOUT the
+       parameter this is the old route exactly: a page loaded before groups
+       existed, still open in some window, reorders without wiping them. A bad
+       list is refused before anything is written — half a layout is worse
+       than none. */
+    const raw = url.searchParams.get('groups')
+    const groups = raw === null ? null : raw.split(',')
+    if (groups && (groups.length !== ids.length || !groups.every(g => g === '' || validGroup(g))))
+      return json(res, { error: 'bad_groups' }, 400)
+    await writeOrder(ids)
+    if (groups) {
+      const was = new Map((await listSessions()).map(s => [s.id, s.group ?? '']))
+      for (let i = 0; i < ids.length; i++) {
+        if (!was.has(ids[i]) || was.get(ids[i]) === groups[i]) continue   // only what changed
+        await tmux(groups[i]
+          ? ['set-option', '-t', PREFIX + ids[i], '@oneterm_group', groups[i]]
+          : ['set-option', '-u', '-t', PREFIX + ids[i], '@oneterm_group'])
+      }
+    }
     return json(res, { ok: true })
   }
   if (p === '/rename') {
@@ -1262,12 +1287,21 @@ async function route(req, res) {
     if (forkPoint) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_fork_at', forkPoint])
     // createSession put it on top; a branch belongs under the tab it came from.
     await writeOrder(orderAfter(list.map(s => s.id), parent.id, id))
+    /* …and in its group: the parent's, or a new one they share. Placed
+       directly under the parent, so the group stays one contiguous run. */
+    const { group, parentNeedsIt } = branchGroup(parent, liveGroupIds(list))
+    await tmux(['set-option', '-t', PREFIX + id, '@oneterm_group', group])
+    if (parentNeedsIt) await tmux(['set-option', '-t', PREFIX + parent.id, '@oneterm_group', group])
     console.log(`[branch] ${parent.id} -> ${id}` + (resume ? ` (fork of ${resume})` : ' (shell)'))
     return json(res, { id })
   }
 
+  /* groups.mjs lives at the root beside branch.mjs, not in public/: the host
+     imports it too, and one file is the point — the drag and the tests run
+     the same rules. Served as JavaScript or the browser refuses the module. */
   const file = VENDOR[p] ? join(ROOT, 'node_modules', VENDOR[p])
-                         : join(ROOT, 'public', (p === '/' ? 'index.html' : p).replace(/^\/+/, ''))
+             : p === '/groups.mjs' ? join(ROOT, 'groups.mjs')
+             : join(ROOT, 'public', (p === '/' ? 'index.html' : p).replace(/^\/+/, ''))
   try {
     const body = await readFile(file)
     const ext = file.slice(file.lastIndexOf('.'))

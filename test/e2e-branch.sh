@@ -100,6 +100,42 @@ C3=$(post "branch?id=$C1" | idof); [ -n "$C3" ] && MADE+=("$C3")
 [ "$(sess "$C3" | get label)" = "↳ work 3" ] && ok "a branch of a branch is ↳ work 3, not ↳ ↳ work" \
   || bad "branch-of-branch label: $(sess "$C3" | get label)"
 
+# ── groups: a branch lands in its parent's group ───────────────────────────
+GP=$(sess "$P" | get group)
+[[ "$GP" =~ ^[0-4]\.[0-9a-z]{6,14}$ ]] && ok "branching a plain tab puts both in a new group ($GP)" \
+  || bad "parent group: '$GP'"
+[ "$(sess "$C1" | get group)" = "$GP" ] && [ "$(sess "$C2" | get group)" = "$GP" ] \
+  && ok "every branch of it joins that group" \
+  || bad "branch groups: $(sess "$C1" | get group) / $(sess "$C2" | get group)"
+[ "$(sess "$C3" | get group)" = "$GP" ] && ok "…and so does a branch of a branch" \
+  || bad "branch-of-branch group: $(sess "$C3" | get group)"
+[ "$(opt "$C1" @oneterm_group)" = "$GP" ] && ok "membership is a tmux option, like the order" \
+  || bad "@oneterm_group: '$(opt "$C1" @oneterm_group)'"
+railids(){ curl -s "$B/sessions" | python3 -c "import json,sys; print(','.join(s['id'] for s in json.load(sys.stdin)))"; }
+# Review focus 1: a page from before groups, still open in some window,
+# reorders without groups=. That must not wipe them.
+post "reorder?ids=$(railids)" >/dev/null
+[ "$(sess "$C1" | get group)" = "$GP" ] && ok "a reorder without groups= (an old page) leaves groups alone" \
+  || bad "an old-style reorder wiped the group: '$(sess "$C1" | get group)'"
+R=$(curl -s -w ' %{http_code}' -X POST -H "$O" "$B/reorder?ids=$C1&groups=evil;x")
+case "$R" in *bad_groups*400) ok "a malformed groups= is 400 bad_groups" ;; *) bad "malformed groups: $R" ;; esac
+R=$(curl -s -w ' %{http_code}' -X POST -H "$O" "$B/reorder?ids=$C1,$C2&groups=$GP")
+case "$R" in *bad_groups*400) ok "…and so is a groups= that does not line up with ids" ;; *) bad "mismatched groups: $R" ;; esac
+[ "$(sess "$C1" | get group)" = "$GP" ] && [ "$(sess "$C2" | get pos)" = $((PP + 1)) ] \
+  && ok "…and neither wrote anything, order or group" || bad "a refused reorder wrote something"
+# Take C3 out of the group the way a drag would: the whole layout, C3 blank.
+GRPS=$(curl -s "$B/sessions" | python3 -c "
+import json,sys; print(','.join('' if s['id']=='$C3' else (s.get('group') or '') for s in json.load(sys.stdin)))")
+post "reorder?ids=$(railids)&groups=$GRPS" >/dev/null
+[ -z "$(sess "$C3" | get group)" ] && [ -z "$(opt "$C3" @oneterm_group)" ] \
+  && ok "a blank slot in groups= takes the tab out, tmux option and all" \
+  || bad "ungroup left: '$(opt "$C3" @oneterm_group)'"
+[ "$(sess "$C1" | get group)" = "$GP" ] && ok "…without touching the others" \
+  || bad "ungrouping one tab moved another: '$(sess "$C1" | get group)'"
+[ "$(curl -s -o /dev/null -w '%{content_type}' "$B/groups.mjs")" = "text/javascript" ] \
+  && ok "the page can load groups.mjs as a module (served as JavaScript)" \
+  || bad "groups.mjs content type: $(curl -s -o /dev/null -w '%{content_type}' "$B/groups.mjs")"
+
 # ── review focus 5: the parent's folder is gone ────────────────────────────
 mkdir -p "$TMP/gone"
 G=$(post "new?cmd=shell&cwd=$TMP/gone" | idof); MADE+=("$G")
