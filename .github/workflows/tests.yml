@@ -37,6 +37,9 @@ jobs:
       - name: branching (labels, fork ids, rail placement)
         run: node test/branch.test.mjs
 
+      - name: branch groups (rail groups, drop rules, colours)
+        run: node test/groups.test.mjs
+
       # sleep.test.mjs, clipboard.test.mjs and fallback-shell.test.sh are gated
       # in bin/reload.sh instead: they need macOS (visudo, osacompile) or tmux
       # with a compiled node-pty, which this runner installs with scripts off.

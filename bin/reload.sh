@@ -80,6 +80,17 @@ if ! node "$DIR/test/branch.test.mjs" >/tmp/oneterm-branch.log 2>&1; then
 fi
 echo "  branching tests pass ($(grep -c '✓' /tmp/oneterm-branch.log) checks)"
 
+# Groups decide where a dragged tab lands and which tmux option it gets, and
+# the page imports the very same module. One wrong rule loses a tab's group or
+# leaves a group of one, so the drop rules are gated like the branch ones.
+if ! node "$DIR/test/groups.test.mjs" >/tmp/oneterm-groups.log 2>&1; then
+  echo
+  echo "✗ branch group tests FAILED — NOT restarting."
+  sed 's/^/  /' /tmp/oneterm-groups.log | tail -25
+  exit 1
+fi
+echo "  branch group tests pass ($(grep -c '✓' /tmp/oneterm-groups.log) checks)"
+
 # The awake switch writes a sudoers rule. A rule that drifts from the commands
 # the host sends makes the switch ask for a password; a broader one is a hole.
 if ! node "$DIR/test/sleep.test.mjs" >/tmp/oneterm-sleep.log 2>&1; then
