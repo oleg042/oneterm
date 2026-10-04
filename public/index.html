@@ -954,8 +954,17 @@ let dragId = null, armedKill = null, armedBranch = null, armTimer = null, lastSi
    rail paints flat exactly as it did before groups: a module that fails to
    load costs the grouping, never the rail. */
 let G = null
-const groupsReady = import('/groups.mjs').then(m => { G = m },
-  e => console.warn('[groups] unavailable, the rail stays flat', e))
+/* A failed import is remembered by the browser for that URL, so a retry asks
+   for a fresh one. A window that came up while the host was restarting gets
+   its groups a few seconds later rather than staying flat until reloaded. */
+function loadGroups(n = 0){
+  return import('/groups.mjs' + (n ? '?retry=' + n : '')).then(m => { G = m; lastSig = ''; if (n) refresh() },
+    e => {
+      console.warn('[groups] unavailable, the rail stays flat for now', e)
+      if (n < 6) setTimeout(() => loadGroups(n + 1), 5000 * (n + 1))
+    })
+}
+const groupsReady = loadGroups()
 const HOLD_MS = 400               // a pause this long over a tab arms grouping
 /* The rail's branch glyph. SVG rather than a character: the fork symbols in
    Unicode are missing from enough fonts to render as an empty box. */
@@ -974,7 +983,7 @@ const DRAG_THRESHOLD = 4          // px before a press becomes a drag, so clicks
 let railOwed = false
 
 function beginDrag(e, el, id){
-  if (e.button !== 0 || renaming) return
+  if (e.button !== 0 || renaming || drag) return      // one drag at a time, whatever the pointers do
   if (e.target.closest('.x, .br, input')) return          // row buttons, rename field
   /* The rows, not the list's children: a group wraps its own. */
   const rows = [...$('slist').querySelectorAll('.sess')]
@@ -1158,17 +1167,18 @@ async function dropGrouped(d){
    the drop undone — and a second drag made from that stale list would send
    the old order and groups back to the host. Such a poll is dropped; the
    next one, 1.5s on, is after the write. */
-let layoutSeq = 0
+let layoutSeq = 0, layoutWriting = 0
 async function writeLayout(path){
-  layoutSeq++
-  try { return await post(path) } finally { layoutSeq++ }
+  layoutSeq++; layoutWriting++
+  try { return await post(path) } finally { layoutWriting--; layoutSeq++ }
 }
 
 async function refresh(){
   if (dragId || renaming) return                             // never repaint mid-drag
   const seq = layoutSeq
   const list = await api('/sessions'); if (!list) return
-  if (seq !== layoutSeq) return
+  // Across a layout write, or during one: the answer may predate it.
+  if (seq !== layoutSeq || layoutWriting) return
   for (const s of list){
     const a = activity.get(s.id) ?? {}
     /* Sounds fire on STABLE transitions only. Both signals are sampled — a

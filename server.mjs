@@ -35,7 +35,7 @@ import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agent
 import { branchLabel, conversationIdFromTranscript, orderAfter, CONV_ID } from './branch.mjs'
 // Which tabs are a group and where a drop lands. The page imports this same
 // file from /groups.mjs, so the host and the drag share one set of rules.
-import { validGroup, liveGroupIds, branchGroup } from './groups.mjs'
+import { validGroup, branchGroup } from './groups.mjs'
 // The awake switch: reading pmset, and the exact commands its sudoers rule allows.
 import { parseSleepDisabled, pmsetArgs, PMSET, sudoersRule, rootInstallCommand, osascriptArgs } from './sleep.mjs'
 import { userInfo } from 'node:os'
@@ -351,19 +351,33 @@ async function sessionsCached() {
   // /sessions costs one spawn per session (capture-pane). A short cache keeps a
   // second tab, or a double render, from multiplying that.
   if (Date.now() - sessionCache.at < 700 && sessionCache.data) return sessionCache.data
-  /* A read takes a while (a capture-pane per session), and a write can land
-     in the middle of it. That read may hold the layout from BEFORE the write:
-     serve it to whoever asked, but never cache it — cached, it was handed out
-     for the next 700ms, and a page that took it and then dropped a second tab
-     sent the old groups back and undid the first drop. */
+  /* Never read a layout half-written: /reorder and /branch write order and
+     groups one tmux call at a time, and a read between them saw a tab moved
+     but not yet regrouped — a group with a hole in it. */
+  await layoutBusy
+  /* A read takes a while (a capture-pane per session), and a layout write can
+     start in the middle of it. That read may hold the layout from BEFORE the
+     write: serve it to whoever asked, but never cache it — cached, it was
+     handed out for the next 700ms, and a page that took it and then dropped a
+     second tab sent the old groups back and undid the first drop. */
   const gen = sessionGen
   const data = await annotateWaiting(await listSessions())
   if (gen === sessionGen) sessionCache = { at: Date.now(), data }
   return data
 }
-/* Every mutation, at its start AND its end: a read that began before or
-   during it is not cacheable. */
-function sessionsChanged() { sessionGen++; sessionCache = { at: 0, data: null } }
+/* A layout change, at its start AND its end: a read that began before or
+   during it is not cacheable. Only for what changes the layout — the status
+   line's /agent-event fires every few seconds per busy tab, and counting it
+   would leave hardly any read cacheable at all. */
+const LAYOUT_MUTATIONS = new Set(['/new', '/kill', '/rename', '/reorder', '/branch'])
+function layoutChanged() { sessionGen++; sessionCache = { at: 0, data: null } }
+/* Layout writes run one at a time, and reads wait for the one in flight. */
+let layoutBusy = Promise.resolve()
+function layoutWrite(fn) {
+  const run = layoutBusy.then(fn, fn)
+  layoutBusy = run.catch(() => {})
+  return run
+}
 
 async function annotateWaiting(list) {
   await Promise.all(list.map(async (s) => {
@@ -960,7 +974,7 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify({ error: String(e?.message ?? e) }))
   } finally {
     // The write is done (or failed): nothing read while it ran may be cached.
-    try { if (MUTATIONS.has(new URL(req.url, 'http://x').pathname)) sessionsChanged() } catch {}
+    try { if (LAYOUT_MUTATIONS.has(new URL(req.url, 'http://x').pathname)) layoutChanged() } catch {}
   }
 })
 
@@ -1007,7 +1021,8 @@ async function route(req, res) {
   if (p === '/projects') return json(res, await readProjects())
   if (p === '/conversations') return json(res, await readConversations())
 
-  if (MUTATIONS.has(p)) sessionsChanged()
+  if (MUTATIONS.has(p)) sessionCache = { at: 0, data: null }
+  if (LAYOUT_MUTATIONS.has(p)) layoutChanged()
   /* Claude Code's own lifecycle events, relayed by hooks/oneterm-agent-state.sh.
    * Already behind the same guard as every mutation: POST only, Host and Origin
    * allowlisted, so a random page cannot forge a session's state. */
@@ -1134,8 +1149,9 @@ async function route(req, res) {
     const groups = raw === null ? null : raw.split(',')
     if (groups && (groups.length !== ids.length || !groups.every(g => g === '' || validGroup(g))))
       return json(res, { error: 'bad_groups' }, 400)
-    await writeOrder(ids)
-    if (groups) {
+    await layoutWrite(async () => {
+      await writeOrder(ids)
+      if (!groups) return
       const was = new Map((await listSessions()).map(s => [s.id, s.group ?? '']))
       for (let i = 0; i < ids.length; i++) {
         if (!was.has(ids[i]) || was.get(ids[i]) === groups[i]) continue   // only what changed
@@ -1143,7 +1159,7 @@ async function route(req, res) {
           ? ['set-option', '-t', PREFIX + ids[i], '@oneterm_group', groups[i]]
           : ['set-option', '-u', '-t', PREFIX + ids[i], '@oneterm_group'])
       }
-    }
+    })
     return json(res, { ok: true })
   }
   if (p === '/rename') {
@@ -1297,13 +1313,15 @@ async function route(req, res) {
     // before typing.
     if (source) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_fork_of', source])
     if (forkPoint) await tmux(['set-option', '-t', PREFIX + id, '@oneterm_fork_at', forkPoint])
-    // createSession put it on top; a branch belongs under the tab it came from.
-    await writeOrder(orderAfter(list.map(s => s.id), parent.id, id))
-    /* …and in its group: the parent's, or a new one they share. Placed
-       directly under the parent, so the group stays one contiguous run. */
-    const { group, parentNeedsIt } = branchGroup(parent, liveGroupIds(list))
-    await tmux(['set-option', '-t', PREFIX + id, '@oneterm_group', group])
-    if (parentNeedsIt) await tmux(['set-option', '-t', PREFIX + parent.id, '@oneterm_group', group])
+    await layoutWrite(async () => {
+      // createSession put it on top; a branch belongs under the tab it came from.
+      await writeOrder(orderAfter(list.map(s => s.id), parent.id, id))
+      /* …and in its group: the parent's, or a new one they share. Placed
+         directly under the parent, so the group stays one contiguous run. */
+      const { group, parentNeedsIt } = branchGroup(parent, list)
+      await tmux(['set-option', '-t', PREFIX + id, '@oneterm_group', group])
+      if (parentNeedsIt) await tmux(['set-option', '-t', PREFIX + parent.id, '@oneterm_group', group])
+    })
     console.log(`[branch] ${parent.id} -> ${id}` + (resume ? ` (fork of ${resume})` : ' (shell)'))
     return json(res, { id })
   }

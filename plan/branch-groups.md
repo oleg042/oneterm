@@ -2,8 +2,8 @@
 
 Written 2026-10-04. Status: built.
 
-Mockup: https://claude.ai/artifact/E6vrcozEQZGoTw1A36MAW3. Its chip and
-collapsed frames predate the decision below and do not apply.
+Mockup: https://claude.ai/artifact/E6vrcozEQZGoTw1A36MAW3 (updated to what
+shipped).
 
 **Decided 2026-10-04:** groups do **not** collapse. That was dropped after the
 first build, once groups were seen working. Without collapsing, the top tab's
@@ -28,7 +28,8 @@ the tabs share a colour line and a faint tint.
   is an ordinary row, and every one is dragged on its own.
 - A group with **one** tab left is drawn as a plain tab. Its id stays on the
   tab and is harmless; if the tab gets a sibling again through a branch, it is
-  that group again, colour and all.
+  that group again, colour and all — unless another tab still carries that id,
+  in which case the branch starts a new group rather than a split one.
 - Groups have **no names**. The tabs' own names already say what the group is.
 
 ## How it looks
@@ -82,7 +83,9 @@ let go:
 ### Hold to group
 
 While dragging, the held row is *over* a neighbour while its travel sits in
-that neighbour's **middle half**, and the gap stays where it was. Hold there
+that neighbour's **middle half** and the gap is right beside that neighbour;
+the gap then stays where it was. "Right beside" keeps a fast flick, sampled
+mid-row on every row it crosses, from leaving the gap behind. Hold there
 for 400ms and grouping arms. Every few px of movement restarts the clock, so a
 slow drag past a tab never groups by accident. Leaving the middle half
 disarms it. Past the outer quarter, the gap moves as a reorder.
@@ -118,9 +121,9 @@ here, so the code that decides where a drop lands is the code under test.
   draws as two runs rather than crashing.
 - `memberMap(sessions)` maps each tab that is drawn in a group to its group.
   `liveGroupIds(sessions)` lists the drawn groups.
-- `branchGroup(parent, liveIds, now, rand)` returns
-  `{ group, parentNeedsIt }`: the parent's group, or a new one that the parent
-  must also be given.
+- `branchGroup(parent, sessions, now, rand)` returns
+  `{ group, parentNeedsIt }`: the parent's group (when it is drawn in it, or
+  no other tab carries the id), or a new one that the parent must also be given.
 - `dropLayout(sessions, id)` returns `{ positions, rows, origin }`:
   - every place tab `id` can land, each `{ gap, before, group, offset }`;
     doorways are the half-row states at group edges
@@ -132,7 +135,8 @@ here, so the code that decides where a drop lands is the code under test.
   - the full new rail order, plus every tab's group (`''` for none), parallel to `ids`
   - `target` is `{ before, group }`, or `{ onto }` for a hold
   - between two members of one group is always inside it
-  - the result never has a group of one or a split group
+  - the result never has a group of one or a split group; settling a split id
+    keeps its longest run, so a stray tab cannot take a drawn group's colour
 
 ## Host (`server.mjs`)
 
@@ -151,8 +155,12 @@ here, so the code that decides where a drop lands is the code under test.
 - **Serving `groups.mjs`**: the route `/groups.mjs` serves `ROOT/groups.mjs`
   as `text/javascript` (`'.mjs'` in `TYPES`).
 - **The `/sessions` cache and writes** (found while building this):
-  - Every mutation now bumps a generation, at its start and again at its end.
-  - A `/sessions` read that overlapped one is served to whoever asked, but is not cached.
+  - `/reorder` and `/branch` write order and groups one tmux call at a time,
+    inside `layoutWrite`: one at a time, and `/sessions` waits for the one in
+    flight, so no read sees a tab moved but not yet regrouped.
+  - Every layout mutation (`/new`, `/kill`, `/rename`, `/reorder`, `/branch`;
+    not the status line's frequent `/agent-event`) bumps a generation at its
+    start and end. A `/sessions` read that overlapped one is served but not cached.
   - Before this, a read that began before a `/reorder` could cache the old
     layout for 700ms. A second drag made in that window then sent the old
     groups back, undoing the first drop.
@@ -163,15 +171,17 @@ here, so the code that decides where a drop lands is the code under test.
   `import('/groups.mjs')` up front. Start-up waits for it alongside the
   skills, projects and conversations fetches. If it fails, the rail paints
   flat exactly as it did before groups, so a missing module costs the
-  grouping, never the rail.
+  grouping, never the rail. It is retried with a fresh URL (the browser
+  remembers a failed import) at 5s, 10s, … up to six times.
 - **`paintRail`** renders `railItems`: each group is a `.grp` wrapper,
   `data-c` = its colour, holding its member rows. Every row is still a `.sess`
   built by `rowEl(s)`, with its handlers unchanged.
 - **`refresh`**:
   - adds `s.group` to the rail signature
-  - drops a poll that was in flight across a layout write. `writeLayout`
-    bumps `layoutSeq` on both sides of the POST; a poll that saw it change
-    may hold the layout from before the drop.
+  - drops a poll that overlapped a layout write. `writeLayout` bumps
+    `layoutSeq` on both sides of the POST and counts writes in flight; a poll
+    that saw the seq change, or finished while a write was pending, may hold
+    the layout from before the drop.
 - **Drag** (`beginDrag` / `onDragMove` / `layoutGap` / `endDrag`):
   - rows are collected as `.sess`, not the list's children, because groups wrap theirs
   - one row of travel is the held row's own height + 1
@@ -223,5 +233,6 @@ here, so the code that decides where a drop lands is the code under test.
   - into a group between members and at its edge
   - hold-to-group on a plain tab and on a grouped tab
   - two drags back to back, the race that found the cache bug
+  - a fast flick, five rows in five pointer samples
   - the join / ungroup / group previews mid-drag
   - dark mode

@@ -53,12 +53,24 @@ eq([...memberMap(L('a', ['b', G], ['c', G], ['d', H])).entries()], [['b', G], ['
 eq(liveGroupIds(L(['a', G], ['b', G], ['c', H])), [G], 'a stale single id is not a live group')
 
 // ── which group a branch lands in ───────────────────────────────────────────
-const bg = branchGroup(S('p'), [G], NOW, R0)
+const bgL = L('p', ['a', G], ['b', G])
+const bg = branchGroup(bgL[0], bgL, NOW, R0)
 bg.parentNeedsIt && GROUP_ID.test(bg.group) && bg.group[0] === '1'
   ? ok('branching a plain tab mints a new group for both, in a free colour')
   : bad(`branchGroup plain: ${JSON.stringify(bg)}`)
-eq(branchGroup(S('p', G), [G], NOW, R0), { group: G, parentNeedsIt: false },
+eq(branchGroup(bgL[1], bgL, NOW, R0), { group: G, parentNeedsIt: false },
    'branching a grouped tab joins its group')
+const lone = L(['p', H], 'x')
+eq(branchGroup(lone[0], lone, NOW, R0), { group: H, parentNeedsIt: false },
+   'a tab left alone with its old id gets that group back when branched')
+/* Review: a stray tab still carrying a LIVE group's id (an old page dragged
+   it out without groups=) must not hand that id to its branch — the branch
+   would sit in a second run of the group, a split group. */
+const stray = L(['c', G], 'x', ['a', G], ['b', G])
+const bs = branchGroup(stray[0], stray, NOW, R0)
+bs.group !== G && bs.parentNeedsIt
+  ? ok("a stray tab carrying a live group's id branches into a new group, not a split one")
+  : bad(`stray branch: ${JSON.stringify(bs)}`)
 
 // ── drop positions: the doorway ─────────────────────────────────────────────
 const at = (lay, i) => [lay.positions[i].gap, lay.positions[i].group]
@@ -85,11 +97,24 @@ eq(dropLayout(L3, 'p').positions.map(p => [p.gap, p.group]),
 // ── where the pointer is ────────────────────────────────────────────────────
 const rowH = lay1.rows.findIndex(r => r.id === 'h')
 const mid = (lay1.rows[rowH].from + lay1.rows[rowH].to) / 2
-eq(locate(lay1, mid, lay1.origin, () => true), { pos: lay1.origin, over: rowH },
-   'the middle half of a tab you could group with is "over" it, and nothing moves')
+const beside = lay1.positions.findIndex(p => p.gap === 2)      // the gap right under h
+eq(locate(lay1, mid, beside, () => true), { pos: beside, over: rowH },
+   'the middle half of a tab you could group with, beside the gap, is "over" it, and nothing moves')
+eq(locate(lay1, mid, lay1.origin, () => true).over, null,
+   'a row the gap is not beside is never "over" — the gap catches up first')
 eq(locate(lay1, mid, lay1.origin, () => false).over, null, 'a tab you cannot group with is never "over"')
 eq(at(lay1, locate(lay1, lay1.rows[rowH].to - 0.1, lay1.origin, () => true).pos), [2, G],
    'past the outer quarter the gap moves after all')
+/* Review: a fast flick samples the pointer about once a frame, and every
+   sample can land mid-row. "Over" only counts beside the gap, or the gap
+   never leaves the start. */
+const flickL = L('a', 'b', 'c', 'd', 'e', 'f')
+const flay = dropLayout(flickL, 'a')
+let fcur = flay.origin
+for (const c of [0.5, 1.5, 2.5, 3.5, 4.5]) fcur = locate(flay, c, fcur, () => true).pos
+flay.positions[fcur].gap >= 4
+  ? ok('a fast flick that samples mid-row on every row still carries the gap along')
+  : bad(`flick left the gap at ${flay.positions[fcur].gap}`)
 
 // ── what a drop does ────────────────────────────────────────────────────────
 const L6 = L('p', ['h', G], ['m', G], 'y')
@@ -124,6 +149,12 @@ eq(resolveDrop(L1, 'n', { before: 'gone', group: null }), null,
    'a drop next to a tab that vanished meanwhile does nothing')
 eq(resolveDrop(L('a', ['b', 'junk']), 'a', { before: null, group: null }).groups,
    ['', ''], 'a garbage id on disk is written back as no group')
+/* Review: settling a split id keeps the run that is actually drawn as the
+   group, so an unrelated drop elsewhere cannot recolour it. */
+const strayL = L(['c', G], 'x', ['a', G], ['b', G], 'y')
+eq(resolveDrop(strayL, 'y', { before: 'x', group: null }, NOW, R0),
+   { ids: ['c', 'y', 'x', 'a', 'b'], groups: ['', '', '', G, G] },
+   "a stray tab with a live group's id loses it; the drawn group keeps its id and colour")
 
 // ── every drop leaves a sound rail ──────────────────────────────────────────
 function sound(r, before){

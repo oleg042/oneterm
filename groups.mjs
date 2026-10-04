@@ -61,11 +61,16 @@ export const liveGroupIds = sessions =>
 /**
  * The group a new branch joins: its parent's, or a new one the parent joins
  * too. A parent holding a stale single id gets it back as a real group — the
- * same group it was, colour and all.
+ * same group it was, colour and all — but only while no other tab carries
+ * that id: reusing an id that still lives elsewhere would put the branch in
+ * a second run of it, a split group.
  */
-export function branchGroup(parent, liveIds, now = Date.now(), rand = Math.random){
-  if (validGroup(parent?.group)) return { group: parent.group, parentNeedsIt: false }
-  return { group: newGroupId(liveIds, now, rand), parentNeedsIt: true }
+export function branchGroup(parent, sessions, now = Date.now(), rand = Math.random){
+  const g = parent?.group
+  if (validGroup(g) && (memberMap(sessions).get(parent.id) === g
+                        || !sessions.some(s => s.id !== parent.id && s.group === g)))
+    return { group: g, parentNeedsIt: false }
+  return { group: newGroupId(liveGroupIds(sessions), now, rand), parentNeedsIt: true }
 }
 
 /**
@@ -108,14 +113,19 @@ export function dropLayout(sessions, id){
  * Where travel `c` (in rows, on the layout's scale) puts the drag.
  *
  * In the middle half of a row it is OVER that tab, provided it is one the
- * dragged tab could group with: the gap stays where it was, which is what lets a
- * hold land on a tab instead of the tab sliding out from under it. Anywhere
- * else it is the nearest position.
+ * dragged tab could group with and the gap is right beside it: the gap stays
+ * where it was, which is what lets a hold land on a tab instead of the tab
+ * sliding out from under it. "Right beside" matters for a fast flick — the
+ * pointer is sampled about once a frame and can land mid-row on every row it
+ * passes, and without it the gap stayed behind at the start. Anywhere else it
+ * is the nearest position.
  */
 export function locate(layout, c, cur, holdable = () => false){
+  const gap = layout.positions[cur]?.gap
   for (let r = 0; r < layout.rows.length; r++){
     const { from, to } = layout.rows[r], q = (to - from) / 4
-    if (c > from + q && c < to - q && holdable(r)) return { pos: cur, over: r }
+    // row r sits between gap r and gap r+1
+    if (c > from + q && c < to - q && (gap === r || gap === r + 1) && holdable(r)) return { pos: cur, over: r }
   }
   let pos = 0, best = Infinity
   layout.positions.forEach((p, i) => {
@@ -167,22 +177,32 @@ export function resolveDrop(sessions, id, target, now = Date.now(), rand = Math.
   return { ids: next.map(s => s.id), groups: next.map(s => grp.get(s.id)) }
 }
 
-/* A split group keeps its first run and every later run becomes a group of its
-   own; then any group left with one tab is no group. Both only matter for a
-   rail that arrived broken — a drop between sound states never splits. */
+/* A split group keeps its LONGEST run (the first, on a tie) and every other
+   run becomes a group of its own; then any group left with one tab is no
+   group. Longest, not first: a stray tab still carrying a live group's id —
+   left by a page from before groups, or a window that could not load
+   groups.mjs — must not take the id, and with it the colour, from the group
+   actually drawn. Only a rail that arrived broken has runs to settle: a drop
+   between sound states never splits one. */
 function settle(list, grp, sessions, now, rand){
-  const seen = new Set(), live = liveGroupIds(sessions)
-  let n = 0
+  const runs = []
   for (let i = 0; i < list.length; ){
     const g = grp.get(list[i].id)
     let j = i + 1
     if (g) while (j < list.length && grp.get(list[j].id) === g) j++
-    if (g && seen.has(g)){
-      const fresh = newGroupId(live, now + ++n, rand); live.push(fresh)
-      for (let k = i; k < j; k++) grp.set(list[k].id, fresh)
-    }
-    if (g) seen.add(g)
+    if (g) runs.push({ g, i, j })
     i = j
+  }
+  const keep = new Map()
+  for (const r of runs){
+    const k = keep.get(r.g)
+    if (!k || r.j - r.i > k.j - k.i) keep.set(r.g, r)
+  }
+  const live = liveGroupIds(sessions)
+  let n = 0
+  for (const r of runs) if (keep.get(r.g) !== r){
+    const fresh = newGroupId(live, now + ++n, rand); live.push(fresh)
+    for (let k = r.i; k < r.j; k++) grp.set(list[k].id, fresh)
   }
   const count = new Map()
   for (const s of list){ const g = grp.get(s.id); if (g) count.set(g, (count.get(g) ?? 0) + 1) }
