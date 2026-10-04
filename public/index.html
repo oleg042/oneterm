@@ -185,16 +185,20 @@ html[data-theme="dark"]{--g0:#8FA8CC;--g1:#C99BBE;--g2:#86B7BE;--g3:#A99BD6;--g4
   background:color-mix(in srgb,var(--gc) 55%,transparent)}
 /* While dragging, the held row is the preview: the line of the group it would
    land in, and a pill when the drop would change its group. A tab it could
-   group with, once held over long enough, wears a dashed ring. */
+   group with wears a faint dashed ring the moment the held row is over it —
+   so you can see you are on target — and a solid one once held long enough. */
 .sess.drag-src{overflow:visible}
 .sess .dl{position:absolute;left:-7px;top:9px;bottom:9px;width:2px;border-radius:2px;
   background:color-mix(in srgb,var(--gc) 55%,transparent);pointer-events:none}
 .sess .dp{position:absolute;top:7px;right:7px;padding:1px 7px 2px;border-radius:99px;
   font-family:var(--mono);font-size:8.5px;letter-spacing:.06em;font-style:normal;pointer-events:none;
   color:var(--gc);background:color-mix(in srgb,var(--gc) 15%,var(--rail))}
+.sess.aim{outline:1.5px dashed color-mix(in srgb,var(--gc) 50%,transparent);outline-offset:-1.5px}
 .sess.hold{outline:1.5px dashed var(--gc);outline-offset:-1.5px;
   background-image:linear-gradient(color-mix(in srgb,var(--gc) 12%,transparent),color-mix(in srgb,var(--gc) 12%,transparent))}
+.sess.drag-src.aiming{opacity:.8}
 .sess.drag-src.grouping{opacity:.55}
+.sess .dp.soon{opacity:.5}
 /* Mid-drag, rows slide by transform while the group's wrapper stays where it
    was — so its tint and line would sit one row off from the rows they mark.
    For the length of a drag each member row carries its own share instead,
@@ -967,7 +971,7 @@ function loadGroups(n = 0){
     })
 }
 const groupsReady = loadGroups()
-const HOLD_MS = 400               // a pause this long over a tab arms grouping
+const HOLD_MS = 300               // a pause this long over a tab arms grouping
 /* The rail's branch glyph. SVG rather than a character: the fork symbols in
    Unicode are missing from enough fonts to render as an empty box. */
 const BRANCH_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" ' +
@@ -1063,24 +1067,39 @@ function holdable(r){
   return !(g && g === drag.group)
 }
 const rowById = id => drag.rows.find(r => r.dataset.id === id)
-/* Grouping arms after a real PAUSE over a tab: every few px of movement
-   restarts the clock, so dragging slowly past a tab never groups by accident. */
+/* Grouping arms after a real PAUSE over a tab, so dragging past one never
+   groups by accident. A pause is judged on the last HOLD_WINDOW ms of travel
+   only: covering more than HOLD_SLOP px in that window restarts the clock.
+   It used to be measured from where the held row first came over the tab —
+   while the hand was still settling — so the settling itself kept restarting
+   it, and the 6px allowed was less than a resting hand on a trackpad drifts. */
+const HOLD_SLOP = 12, HOLD_WINDOW = 150
 function trackHold(over, e){
-  const h = drag.hold
   if (over === null){ disarmHold(); return }
-  if (h && h.r === over && Math.hypot(e.clientX - h.x, e.clientY - h.y) <= 6) return
-  if (h && h.r === over && h.armed) return            // armed stays armed while it stays over
+  const now = performance.now(), pt = { t: now, x: e.clientX, y: e.clientY }
+  const h = drag.hold
+  if (h && h.r === over){
+    if (h.armed) return                               // armed stays armed while it stays over
+    h.trail.push(pt)
+    while (h.trail.length > 1 && h.trail[0].t < now - HOLD_WINDOW) h.trail.shift()
+    if (Math.hypot(pt.x - h.trail[0].x, pt.y - h.trail[0].y) > HOLD_SLOP){
+      clearTimeout(h.timer); h.trail = [pt]; h.timer = armAfter(over)
+    }
+    return
+  }
   disarmHold()
-  drag.hold = { r: over, x: e.clientX, y: e.clientY, armed: false,
-                timer: setTimeout(() => { if (drag?.hold?.r === over){ drag.hold.armed = true; paintPreview() } }, HOLD_MS) }
+  drag.hold = { r: over, trail: [pt], armed: false, timer: armAfter(over) }
 }
+const armAfter = over => setTimeout(() => {
+  if (drag?.hold?.r === over){ drag.hold.armed = true; paintPreview() }
+}, HOLD_MS)
 function disarmHold(){
   if (!drag?.hold) return
   clearTimeout(drag.hold.timer)
   const t = rowById(drag.layout.rows[drag.hold.r].id)
-  if (t){ t.classList.remove('hold'); delete t.dataset.c }
+  if (t){ t.classList.remove('aim', 'hold'); delete t.dataset.c }
   drag.hold = null
-  drag.el.classList.remove('grouping')
+  drag.el.classList.remove('aiming', 'grouping')
 }
 /* The held row is the preview: the line of the group it would land in, and a
    pill when the drop changes its group — `join` in the new group's colour,
@@ -1088,15 +1107,18 @@ function disarmHold(){
    so the tab underneath shows its dashed ring — the held row sits squarely on
    top of it, and an opaque one hid the very thing that says "armed" — and the
    pill, on the held row where nothing can cover it, says `group`, in the
-   colour the group will have. */
+   colour the group will have. All of it shows faintly from the moment the
+   held row is over the tab, before the hold arms: finding the target was the
+   hard part, so it should not wait until you have already found it. */
 function paintPreview(){
   const { el, layout, hold } = drag
   let line = null, pill = null, colorIdx = null
+  el.classList.toggle('aiming', !!hold && !hold.armed)
   el.classList.toggle('grouping', !!hold?.armed)
-  if (hold?.armed){
+  if (hold){
     const t = rowById(layout.rows[hold.r].id), tg = drag.gm.get(layout.rows[hold.r].id)
     colorIdx = tg ? G.groupColor(tg) : Number(G.newGroupId(G.liveGroupIds(sessions))[0])
-    if (t){ t.classList.add('hold'); t.dataset.c = colorIdx }
+    if (t){ t.classList.add('aim'); t.classList.toggle('hold', hold.armed); t.dataset.c = colorIdx }
     pill = 'group'
   } else {
     const g = layout.positions[drag.pos].group
@@ -1111,6 +1133,7 @@ function paintPreview(){
   if (pill){
     if (!dp){ dp = document.createElement('i'); dp.className = 'dp'; el.appendChild(dp) }
     dp.textContent = pill
+    dp.classList.toggle('soon', !!hold && !hold.armed)
   } else dp?.remove()
   if (colorIdx !== null) el.dataset.c = colorIdx; else delete el.dataset.c
 }
@@ -1142,9 +1165,9 @@ async function endDrag(e){
   if (d.hold) clearTimeout(d.hold.timer)
   for (const r of d.rows){
     r.style.transform = ''
-    r.classList.remove('hold'); r.querySelectorAll(':scope > .dl, :scope > .dp').forEach(x => x.remove())
+    r.classList.remove('aim', 'hold'); r.querySelectorAll(':scope > .dl, :scope > .dp').forEach(x => x.remove())
   }
-  d.el.classList.remove('drag-src', 'grouping')
+  d.el.classList.remove('drag-src', 'aiming', 'grouping')
   document.body.classList.remove('rail-dragging')
   const owed = railOwed; railOwed = false
   if (!d.moved){ dragId = null; if (owed) paintRail(); return }   // it was a click after all

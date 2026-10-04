@@ -60,7 +60,7 @@ The status colours are vermillion (working), amber (waiting) and green
 |---|---|
 | Branch a plain tab | The tab and its branch become a new group, the branch under the tab |
 | Branch a tab that is in a group | The branch joins that group, directly under the tab it came from |
-| Drag a tab and **hold ~0.4s** over a plain tab | The two become a new group, the dragged tab second |
+| Drag a tab and **hold ~0.3s** over a plain tab | The two become a new group, the dragged tab second |
 | Drag a tab and hold over a tab that is in a group | The dragged tab joins that group, directly under the held-over tab |
 | Drop a tab between two tabs of a group | It joins that group |
 
@@ -83,9 +83,10 @@ let go:
 ### Hold to group
 
 **Over a tab is judged on screen** (`holdCheck`): the held row's centre lies
-in the middle half of a neighbouring tab as drawn right now.
+in the middle three-quarters of a neighbouring tab as drawn right now (it was the middle half, ~24px, and too fiddly to find).
 
-- **Hold there for 400ms** and grouping arms. Every few px of movement restarts the clock, so a slow drag past a tab never groups by accident. Leaving the middle half disarms it.
+- **Hold there for 300ms** and grouping arms. Covering more than 12px within any 150ms restarts the clock, so a drag past a tab never groups by accident, while a hand settling onto the tab does not count against it. Leaving the target zone disarms it.
+- **Over a tab, before it arms,** the tab shows a faint dashed ring and the held row a faint `group` pill: you can see you are on target while you hold. Both go solid when it arms.
 - **Armed:**
   - The held row turns see-through, so the tab under it shows its dashed ring.
   - The `group` pill sits on the held row, where nothing can cover it, in the colour the group will have.

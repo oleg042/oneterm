@@ -104,10 +104,20 @@ const nextFor = mid => locate(play, play.positions[play.origin].offset + (mid - 
    read as "past b" and slide b away. It must be over b, gap unmoved. */
 eq(holdCheck(play, play.origin, nextFor(75), 75, null, rowAt(0, 50)), { pos: play.origin, over: 0 },
    'a tab dragged squarely onto the next one is over it, and that one holds still')
-eq(holdCheck(play, play.origin, nextFor(58), 58, null, rowAt(0, 50)), { pos: play.origin, over: null },
+eq(holdCheck(play, play.origin, nextFor(54), 54, null, rowAt(0, 50)), { pos: play.origin, over: null },
    'short of its middle the tab does not slide away yet — it waits to be landed on')
-eq(play.positions[holdCheck(play, play.origin, nextFor(92), 92, null, rowAt(0, 50)).pos].gap, 1,
+eq(play.positions[holdCheck(play, play.origin, nextFor(95), 95, null, rowAt(0, 50)).pos].gap, 1,
    'past its middle the gap moves on: an ordinary reorder')
+/* Real use, again: the middle half of a row was too small a target to find.
+   Most of the tab counts now — just in from either edge is already over it. */
+eq(holdCheck(play, play.origin, nextFor(59), 59, null, rowAt(0, 50)).over, 0,
+   'just in from the top edge of the next tab is already over it')
+eq(holdCheck(play, play.origin, nextFor(90), 90, null, rowAt(0, 50)).over, 0,
+   'and so is just short of its bottom edge')
+const prevRow = { r: 0, top: 0, bottom: 49, holdable: true }
+const up = dropLayout(L('a', 'b', 'c'), 'b')               // 'b' dragged up onto 'a'
+eq(holdCheck(up, up.origin, locate(up, up.positions[up.origin].offset - 0.8), 10, prevRow, null).over, 0,
+   'dragged up, the tab above is a target just as big')
 eq(holdCheck(play, play.origin, nextFor(75), 75, null, rowAt(0, 50, false)).over, null,
    'a tab it cannot group with (already in its group) is never "over"')
 eq(play.positions[holdCheck(play, play.origin, nextFor(80), 80, null, rowAt(0, 50, false)).pos].gap, 1,

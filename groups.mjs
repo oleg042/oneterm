@@ -129,8 +129,9 @@ export function locate(layout, c){
  * `{ r, top, bottom, holdable }`, or null. `cur` is the current position and
  * `next` the one travel alone picks (`locate`).
  *
- * - The held row's centre in the middle half of a tab it could group with:
- *   OVER that tab, and the gap stays put.
+ * - The held row's centre in the middle three-quarters of a tab it could
+ *   group with: OVER that tab, and the gap stays put. (It was the middle
+ *   half — about 24px of a row — and in real use that was too fiddly to find.)
  * - Short of that middle, the gap does not cross such a tab, so the tab
  *   holds still to be landed on; past it, the gap moves on as a reorder. It
  *   is how a phone's home screen tells "make a folder" from "rearrange".
@@ -141,14 +142,14 @@ export function locate(layout, c){
  * was measured in them a tab dragged squarely onto another had already slid
  * that tab out of the way.
  */
+const AIM_EDGE = 1 / 8            // of a tab's height, at each end, that is not "on it"
 export function holdCheck(layout, cur, next, mid, above, below){
+  const q = b => (b.bottom - b.top) * AIM_EDGE
   for (const b of [below, above]){
     if (!b?.holdable) continue
-    const q = (b.bottom - b.top) / 4
-    if (mid > b.top + q && mid < b.bottom - q) return { pos: cur, over: b.r }
+    if (mid > b.top + q(b) && mid < b.bottom - q(b)) return { pos: cur, over: b.r }
   }
   const g = layout.positions[cur].gap, ng = layout.positions[next].gap
-  const q = b => (b.bottom - b.top) / 4
   if (below?.holdable && ng > g && mid <= below.bottom - q(below)) return { pos: cur, over: null }
   if (above?.holdable && ng < g && mid >= above.top + q(above)) return { pos: cur, over: null }
   return { pos: next, over: null }
