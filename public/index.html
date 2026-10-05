@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -549,10 +549,16 @@ const THEMES = {
     brightBlue:'#A2C1E0', brightMagenta:'#CDB2D3', brightCyan:'#9BC8CD', brightWhite:'#EDE9E1' },
 }
 /* ?theme=light|dark — an embedding app (the study cockpit) keeps the pane on its own theme; not persisted. */
+/* Otherwise the light/dark button's last choice, and dark when there is none —
+   dark by default, whatever the OS is set to; the <html> tag starts dark too,
+   so a reload never flashes light first. The choice moved to a new key when
+   dark became the default: one saved under the old key was made against a
+   light default, so it starts over rather than keep the old look. */
+const THEME_KEY = 'oneterm-theme-v2'
+localStorage.removeItem('oneterm-theme')
 const themeParam = new URLSearchParams(location.search).get('theme')
 let theme = (themeParam === 'light' || themeParam === 'dark') ? themeParam
-  : localStorage.getItem('oneterm-theme')
-  || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+  : localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'
 document.documentElement.dataset.theme = theme
 
 const term = new Terminal({
@@ -1934,7 +1940,7 @@ for (const b of $('skillseg').children) b.onclick = () => {
 }
 $('themeBtn').onclick = () => {
   theme = theme === 'dark' ? 'light' : 'dark'
-  localStorage.setItem('oneterm-theme', theme)
+  localStorage.setItem(THEME_KEY, theme)
   document.documentElement.dataset.theme = theme
   term.options.theme = THEMES[theme]
   lastIcon = ''; paintFavicon()
