@@ -10,6 +10,9 @@ first build, once groups were seen working. Without collapsing, the top tab's
 chip had no job left, so there is no chip either: a group is its line and its
 tint, and nothing else.
 
+**Added 2026-10-05:** the line is also a handle. Drag it to move the whole
+group (see "Moving a whole group").
+
 ---
 
 ## What it is for
@@ -38,7 +41,7 @@ Drawn in the rail's existing tokens.
 
 | Part | Look |
 |---|---|
-| Group line | 2px, group colour at 55%, in the rail's 10px left margin (x ≈ 3–5px), from the first row's top inset to the last row's bottom inset. Rows are **not** indented, so names keep their full width. |
+| Group line | 2px, group colour at 55%, in the rail's 10px left margin (x ≈ 3–5px), from the first row's top inset to the last row's bottom inset. Rows are **not** indented, so names keep their full width. The line is drawn by the group's handle, which fills that whole 10px margin. Hovering it shows the hand cursor and thickens the line to 4px at full colour. |
 | Tint | The group colour at 6% behind the whole group, 5px radius, 3px margin above and below the group. |
 
 The status colours are vermillion (working), amber (waiting) and green
@@ -99,6 +102,17 @@ group edges and are offset from the pixels the eye lines up, so a tab dragged
 squarely onto another had already slid it away. The armed ring was also
 hidden under the opaque held row.
 
+### Moving a whole group
+
+- **Grab the group's line** (anywhere in the 10px margin beside the group) and
+  drag. The group lifts with a shadow, and the tabs and groups it passes slide
+  aside by its full height.
+- **It lands between items**: above or below a plain tab or another group,
+  never inside another group. It passes an item once its leading edge crosses
+  that item's middle, as sortable lists judge it, because items differ in height.
+- **Nothing about the group changes** except where it sits: same tabs, same
+  order, same id and colour. A click on the line without moving does nothing.
+
 ## Where the state lives
 
 | State | Stored in | Why |
@@ -144,6 +158,12 @@ here, so the code that decides where a drop lands is the code under test.
   - between two members of one group is always inside it
   - the result never has a group of one or a split group; settling a split id
     keeps its longest run, so a stray tab cannot take a drawn group's colour
+- `resolveGroupMove(sessions, members, before, now, rand)` returns `{ ids, groups }`,
+  or `null` for a move that changes nothing or cannot happen:
+  - `members` are the group's tabs as drawn, top to bottom; they land as one
+    block before `before` (a plain tab, or the first tab of a group), or at the bottom for `null`
+  - a `before` inside another group, a vanished one, or members that are not a drawn group: `null`
+  - the result is settled like any drop
 
 ## Host (`server.mjs`)
 
@@ -194,8 +214,13 @@ here, so the code that decides where a drop lands is the code under test.
   - one row of travel is the held row's own height + 1
   - travel goes through `dropLayout` and `locate`
   - the preview is `paintPreview`; the hold timer is `trackHold`
-  - the drop is `dropGrouped`: `resolveDrop`, applied optimistically, then
-    `writeLayout('/reorder?ids=…&groups=…')`
+  - the drop is `dropGrouped`: `resolveDrop`, then `applyDrop`, which applies
+    it optimistically and sends `writeLayout('/reorder?ids=…&groups=…')`
+- **Group drag** (`beginGroupDrag` / `groupMove` / `endGroupDrag`), from the
+  `.gh` handle that paintRail adds to each group:
+  - it moves the list's top-level children (plain rows and group wrappers),
+    each by the group's height plus its margins, through the same `layoutGap`
+  - the drop is `resolveGroupMove`, then `applyDrop`
 
 ## Known limits
 
@@ -203,8 +228,6 @@ here, so the code that decides where a drop lands is the code under test.
   a window whose last poll predates another window's change writes its older
   view. That is the same last-writer-wins `/reorder` always had, and the 1.5s
   poll keeps the window short.
-- **No moving a group as a block.** Every tab moves on its own; moving a group
-  is moving its tabs.
 
 ## Not in this change
 

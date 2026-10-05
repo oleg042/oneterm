@@ -197,6 +197,40 @@ export function resolveDrop(sessions, id, target, now = Date.now(), rand = Math.
   return { ids: next.map(s => s.id), groups: next.map(s => grp.get(s.id)) }
 }
 
+/**
+ * Moving a whole group by its bar. `members` are the group's tabs as drawn,
+ * top to bottom; they keep their order and their group and land as one block
+ * before `before` — the first tab of a plain tab or of another group — or at
+ * the bottom (null). A group never lands inside another group.
+ *
+ * Returns { ids, groups } for /reorder?ids=…&groups=…, or null for a move
+ * that changes nothing or cannot happen: the group is no longer drawn as one
+ * run, or `before` vanished or sits inside another group. Like any drop, what
+ * goes out has no group of one and no split group.
+ */
+export function resolveGroupMove(sessions, members, before, now = Date.now(), rand = Math.random){
+  if (!Array.isArray(members) || members.length < 2) return null
+  const gm = memberMap(sessions), g = gm.get(members[0])
+  const from = sessions.findIndex(s => s.id === members[0])
+  if (!g || from < 0 || !members.every((id, k) => sessions[from + k]?.id === id && gm.get(id) === g)) return null
+  const inBlock = new Set(members)
+  const block = sessions.slice(from, from + members.length)
+  const rest = sessions.filter(s => !inBlock.has(s.id))
+  let at = rest.length
+  if (before !== null){
+    if (inBlock.has(before)) return null
+    at = rest.findIndex(s => s.id === before)
+    if (at < 0) return null
+    const bg = gm.get(before)
+    if (bg && at > 0 && gm.get(rest[at - 1].id) === bg) return null     // inside another group
+  }
+  const next = [...rest.slice(0, at), ...block, ...rest.slice(at)]
+  if (next.every((s, i) => s.id === sessions[i].id)) return null
+  const grp = new Map(sessions.map(s => [s.id, validGroup(s.group) ? s.group : '']))
+  settle(next, grp, sessions, now, rand)
+  return { ids: next.map(s => s.id), groups: next.map(s => grp.get(s.id)) }
+}
+
 /* A split group keeps its LONGEST run (the first, on a tie) and every other
    run becomes a group of its own; then any group left with one tab is no
    group. Longest, not first: a stray tab still carrying a live group's id —

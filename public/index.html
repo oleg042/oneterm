@@ -171,7 +171,7 @@ body.norail aside{display:none}
   box-shadow:0 10px 26px rgba(0,0,0,.30);opacity:.97}
 body.rail-dragging{cursor:grabbing}
 body.rail-dragging .sess{user-select:none}
-@media (prefers-reduced-motion:reduce){.sess{transition:none}}
+@media (prefers-reduced-motion:reduce){.sess,.grp{transition:none}}
 /* ── branch groups ───────────────────────────────────────────────────────────
    Tabs that belong together share a line in the rail's left margin and a faint
    tint. No header row, no chip, nothing to collapse, no indent — names keep
@@ -184,8 +184,19 @@ html[data-theme="dark"]{--g0:#8FA8CC;--g1:#C99BBE;--g2:#86B7BE;--g3:#A99BD6;--g4
 [data-c="3"]{--gc:var(--g3)} [data-c="4"]{--gc:var(--g4)}
 .grp{position:relative;flex:0 0 auto;display:flex;flex-direction:column;gap:1px;margin:3px 0;
   border-radius:5px;background:color-mix(in srgb,var(--gc) 6%,transparent)}
-.grp::before{content:'';position:absolute;left:-7px;top:9px;bottom:9px;width:2px;border-radius:2px;
-  background:color-mix(in srgb,var(--gc) 55%,transparent)}
+.grp{transition:transform 190ms cubic-bezier(.2,.6,.35,1)}
+/* The group's bar is drawn by its handle, and the handle is the whole gutter
+   beside the group — 10px to land on rather than the 2px bar. Hover thickens
+   the bar and shows the hand; dragging it moves the whole group. */
+.grp > .gh{position:absolute;left:-10px;top:0;bottom:0;width:10px;cursor:grab;touch-action:none}
+.grp > .gh::before{content:'';position:absolute;left:3px;top:9px;bottom:9px;width:2px;border-radius:2px;
+  background:color-mix(in srgb,var(--gc) 55%,transparent);transition:left 120ms,width 120ms,background 120ms}
+.grp > .gh:hover::before,.grp.lifted > .gh::before{left:2px;width:4px;background:var(--gc)}
+.grp.lifted{z-index:6;transition:none;background:color-mix(in srgb,var(--gc) 8%,var(--raise));
+  box-shadow:0 10px 26px rgba(0,0,0,.30)}
+.grp.lifted > .gh,body.group-dragging{cursor:grabbing}
+body.group-dragging .sess{user-select:none}
+body.group-dragging .sess .x,body.group-dragging .sess .br{opacity:0}
 /* While dragging, the held row is the preview: the line of the group it would
    land in, and a pill when the drop would change its group. A tab it could
    group with wears a faint dashed ring the moment the held row is over it —
@@ -208,13 +219,13 @@ html[data-theme="dark"]{--g0:#8FA8CC;--g1:#C99BBE;--g2:#86B7BE;--g3:#A99BD6;--g4
    and the marks travel with it. A background IMAGE, so the row's own wash
    (you are here, waiting) still shows through underneath. */
 body.rail-dragging .grp{background:none}
-body.rail-dragging .grp::before{display:none}
+body.rail-dragging .grp > .gh{display:none}
 body.rail-dragging .grp > .sess:not(.drag-src){overflow:visible;
   background-image:linear-gradient(color-mix(in srgb,var(--gc) 6%,transparent),color-mix(in srgb,var(--gc) 6%,transparent))}
 body.rail-dragging .grp > .sess:not(.drag-src)::after{content:'';position:absolute;left:-7px;top:-1px;bottom:0;
   width:2px;background:color-mix(in srgb,var(--gc) 55%,transparent)}
-body.rail-dragging .grp > .sess:first-child::after{top:9px}
-body.rail-dragging .grp > .sess:last-child::after{bottom:9px}
+body.rail-dragging .grp > .sess:first-of-type::after{top:9px}
+body.rail-dragging .grp > .sess:last-of-type::after{bottom:9px}
 body.rail-dragging .sess .x,body.rail-dragging .sess .br{opacity:0}
 .rename{cursor:text;user-select:text;width:100%;background:var(--sink);border:1px solid var(--accent);
   border-radius:3px;padding:3px 6px;font-family:var(--ui);font-size:13px;
@@ -1036,6 +1047,7 @@ function onDragMove(e){
      cost the row its capture. Without this the drag stayed open and every
      repaint stayed owed, so the rail froze until the next click. */
   if (e.buttons === 0){ endDrag(e); return }
+  if (drag.kind === 'group'){ groupMove(e); return }
   const dy = e.clientY - drag.startY
   if (!drag.moved){
     if (Math.abs(dy) < DRAG_THRESHOLD) return      // still a click, not a drag
@@ -1068,6 +1080,60 @@ function onDragMove(e){
   if (to !== drag.to){ drag.to = to; layoutGap() }
   trackHold(over, e)
   paintPreview()
+}
+
+/* The whole group, dragged by its bar. What slides is the rail's top-level
+   items — plain rows and group wrappers — held in `rows` so layoutGap moves
+   them as it moves rows, each by the group's full height (`step`). Items
+   differ in height, so where the group lands is judged as sortable lists
+   judge it: it has passed an item once its leading edge crosses that item's
+   middle, measured where the items stood when the drag began. */
+function beginGroupDrag(e, wrap, handle){
+  if (e.button !== 0 || renaming || drag) return
+  const items = [...$('slist').children]
+  const idx = items.indexOf(wrap)
+  if (idx < 0) return
+  e.preventDefault()
+  const cs = getComputedStyle(wrap), box = wrap.getBoundingClientRect()
+  drag = { kind: 'group', el: wrap, handle, rows: items, idx, to: idx, startY: e.clientY, moved: false,
+           members: [...wrap.querySelectorAll(':scope > .sess')].map(r => r.dataset.id),
+           rects: items.map(x => x.getBoundingClientRect()),
+           step: box.height + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom) + 1 }
+  handle.setPointerCapture?.(e.pointerId)
+  addEventListener('pointermove', onDragMove)
+  addEventListener('pointerup', endDrag)
+  addEventListener('pointercancel', endDrag)
+}
+function groupMove(e){
+  const d = drag, dy = e.clientY - d.startY
+  if (!d.moved){
+    if (Math.abs(dy) < DRAG_THRESHOLD) return
+    d.moved = true; dragId = d.members[0]
+    document.body.classList.add('group-dragging'); d.el.classList.add('lifted')
+  }
+  d.el.style.transform = `translateY(${dy}px)`
+  const mid = i => (d.rects[i].top + d.rects[i].bottom) / 2
+  const top = d.rects[d.idx].top + dy, bottom = d.rects[d.idx].bottom + dy
+  let to = d.idx
+  if (dy > 0) while (to + 1 < d.rows.length && bottom > mid(to + 1)) to++
+  else while (to > 0 && top < mid(to - 1)) to--
+  if (to !== d.to){ d.to = to; layoutGap() }
+}
+function endGroupDrag(d, e){
+  if (d.handle.isConnected) try { d.handle.releasePointerCapture?.(e.pointerId) } catch {}
+  for (const x of d.rows) x.style.transform = ''
+  d.el.classList.remove('lifted')
+  document.body.classList.remove('group-dragging')
+  const owed = railOwed; railOwed = false
+  if (!d.moved){ dragId = null; if (owed) paintRail(); return }
+  if (d.to === d.idx){ dragId = null; paintRail(); return }
+  /* Moving down it lands after the item at `to`, moving up before it: either
+     way, before whatever sits at `to` once the group is lifted out. */
+  const b = d.rows.filter(x => x !== d.el)[d.to]
+  const before = b ? (b.matches('.grp') ? b.querySelector('.sess') : b).dataset.id : null
+  const r = G.resolveGroupMove(sessions, d.members, before)
+  if (!r){ dragId = null; paintRail(); return }
+  applyDrop(r)
 }
 
 /* A tab the dragged one could group with: any, except one already in its group. */
@@ -1166,6 +1232,7 @@ async function endDrag(e){
   removeEventListener('pointermove', onDragMove)
   removeEventListener('pointerup', endDrag)
   removeEventListener('pointercancel', endDrag)
+  if (d.kind === 'group'){ endGroupDrag(d, e); return }
   /* Best effort: releasePointerCapture THROWS for a pointer id that is not
      active, and a throw here stopped endDrag halfway — drag cleared but dragId
      left set, which is the frozen-rail state all over again. This is the only
@@ -1202,6 +1269,11 @@ async function dropGrouped(d){
   const r = G.resolveDrop(sessions, d.id,
     armed ? { onto: d.layout.rows[d.hold.r].id } : { before: p.before, group: p.group })
   if (!r){ dragId = null; paintRail(); return }
+  applyDrop(r)
+}
+/* What a tab's or a group's drop makes of the rail, applied here first so
+   nothing waits on the round trip, then sent whole in one /reorder. */
+async function applyDrop(r){
   const byId = new Map(sessions.map(s => [s.id, s]))
   sessions = r.ids.map((id, i) => ({ ...byId.get(id), group: r.groups[i] || null }))
   dragId = null
@@ -1377,6 +1449,10 @@ function paintRail(){
     const wrap = document.createElement('div')
     wrap.className = 'grp'; wrap.dataset.c = it.color; wrap.dataset.g = it.id
     for (const s of it.members) wrap.appendChild(rowEl(s))
+    const gh = document.createElement('i')            // the bar, and the handle that moves the group
+    gh.className = 'gh'; gh.title = 'Drag to move the group'
+    gh.onpointerdown = e => beginGroupDrag(e, wrap, gh)
+    wrap.appendChild(gh)
     box.appendChild(wrap)
   }
   const cur = sessions.find(x => x.id === active)

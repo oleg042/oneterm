@@ -5,7 +5,8 @@
  *   node test/groups.test.mjs
  */
 import { GROUP_ID, validGroup, groupColor, newGroupId, railItems, memberMap,
-         liveGroupIds, branchGroup, dropLayout, locate, holdCheck, resolveDrop } from '../groups.mjs'
+         liveGroupIds, branchGroup, dropLayout, locate, holdCheck, resolveDrop,
+         resolveGroupMove } from '../groups.mjs'
 
 let pass = 0, fail = 0
 const ok  = m => { console.log(`  \x1b[32m✓\x1b[0m ${m}`); pass++ }
@@ -212,6 +213,41 @@ for (const lay of LAYOUTS) for (const { id } of lay) {
 }
 broken.length ? bad(`${broken.length} of ${checked} drops left an unsound rail:\n      ` + broken.slice(0, 5).join('\n      '))
               : ok(`all ${checked} possible drops across ${LAYOUTS.length} layouts leave no group of one and no split group`)
+
+// ── moving a whole group by its bar ─────────────────────────────────────────
+const GM = L('a', ['h', G], ['m', G], 'b', ['c', H], ['d', H], 'e')
+const moved = r => r && r.ids.map((id, i) => r.groups[i] ? `${id}:${r.groups[i][0]}` : id).join(' ')
+eq(moved(resolveGroupMove(GM, ['h', 'm'], 'e')), 'a b c:1 d:1 h:0 m:0 e',
+   'a group dragged down lands whole, in order, still a group, above the tab it was dropped on')
+eq(moved(resolveGroupMove(GM, ['c', 'd'], 'a')), 'c:1 d:1 a h:0 m:0 b e',
+   'dragged to the top')
+eq(moved(resolveGroupMove(GM, ['h', 'm'], null)), 'a b c:1 d:1 e h:0 m:0',
+   'dragged to the bottom')
+eq(moved(resolveGroupMove(GM, ['c', 'd'], 'h')), 'a c:1 d:1 h:0 m:0 b e',
+   'it can land right above another group')
+eq(resolveGroupMove(GM, ['c', 'd'], 'm'), null, 'but never inside one')
+eq([resolveGroupMove(GM, ['h', 'm'], 'b'), resolveGroupMove(GM, ['h', 'm'], 'h')], [null, null],
+   'dropped back where it was, or onto itself: nothing to write')
+eq([resolveGroupMove(GM, ['h', 'b'], 'e'), resolveGroupMove(GM, ['h'], 'e'),
+    resolveGroupMove(GM, ['h', 'm'], 'gone')], [null, null, null],
+   'not a drawn group, a group of one, or a vanished target: no move')
+eq(resolveGroupMove(GM, ['c', 'd'], 'a').groups.filter(Boolean).length, 4,
+   'the other group is untouched')
+let gmChecked = 0, gmBroken = []
+for (const lay of LAYOUTS) for (const it of railItems(lay)) if (it.kind === 'group') {
+  const ms = it.members.map(s => s.id)
+  for (const b of [...lay.map(s => s.id), null]) {
+    const r = resolveGroupMove(lay, ms, b, NOW, Math.random); gmChecked++
+    if (!r) continue
+    const why = sound(r, lay)
+    const at = r.ids.indexOf(ms[0])
+    const whole = ms.every((id, k) => r.ids[at + k] === id) && new Set(ms.map(id => r.groups[r.ids.indexOf(id)])).size === 1
+      && r.groups[at] !== ''
+    if (why || !whole) gmBroken.push(`${JSON.stringify(lay)} move ${ms} before ${b}: ${why || 'group not kept whole'}`)
+  }
+}
+gmBroken.length ? bad(`${gmBroken.length} of ${gmChecked} group moves broke:\n      ` + gmBroken.slice(0, 5).join('\n      '))
+                : ok(`all ${gmChecked} possible group moves keep the group whole, and leave no group of one or split`)
 
 console.log(`\n  ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)

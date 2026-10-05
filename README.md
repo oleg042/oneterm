@@ -34,7 +34,8 @@ what exists; there is no session list to drift out of sync.
 - **Branch groups** — a branch and the tab it came from share a coloured line
   and tint in the rail, so renamed branches still read as one piece of work.
   Hold a dragged tab over another for a moment to group the two; drag a tab
-  half a row past a group's edge to take it out.
+  half a row past a group's edge to take it out. Drag a group's line to move
+  the whole group.
 - **An awake switch** — bottom-right of the rail. On, the Mac keeps running
   with the lid closed (`pmset -a disablesleep 1`), and the switch glows so it
   is never on unnoticed. It needs root once: the first click shows the macOS
