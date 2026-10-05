@@ -29,7 +29,10 @@
    ─────────────────────────────────────────────────────────────────────────── */
 :root{
   --paper:#F7F5F1; --rail:#F1EEE8; --raise:#EAE6DE; --sink:#FFFFFF;
-  --ink:#1C1A17; --muted:#57524A; --faint:#736D65;
+  /* muted and faint were #57524A and #736D65: the faint one was 4.4:1 on the
+     rail, under the 4.5 small text needs, and it carries 10px paths and 9px
+     tags. Both darker now — 9.6:1 and 6.3:1 — with ink still the darkest. */
+  --ink:#1C1A17; --muted:#3F3B35; --faint:#5C564E;
   --line:rgba(28,26,23,.08); --line2:rgba(28,26,23,.14);
   --accent:#C4551F; --accent-soft:rgba(196,85,31,.09);
   --ok:#5B7F5B; --warn:#B08A2E; --err:#A8402F;
