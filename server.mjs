@@ -1077,7 +1077,7 @@ async function route(req, res) {
     // than abandoning the request body mid-read.
     for await (const c of req) { chunks.push(c); n += c.length; if (n > 4096) { req.resume(); break } }
     const body = Buffer.concat(chunks).toString('utf8').slice(0, 600).replace(/\s+/g, ' ')
-    console.log(`[chime] ${body}`)
+    console.log(`[${body.includes('"kind":"error"') ? 'client-error' : 'chime'}] ${body}`)
     return json(res, { ok: true })
   }
 

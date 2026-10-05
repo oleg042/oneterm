@@ -947,6 +947,20 @@ function note(kind, s, extra){
   } catch {}
 }
 
+/* Page errors reach the host log as [client-error], so a frozen rail or a dead
+   button names its cause there instead of leaving a guess. Each distinct
+   message once per page load, at most 20, so a loop cannot flood the log. */
+const reported = new Set()
+function reportError(msg, where){
+  msg = String(msg || 'unknown').slice(0, 300)
+  if (reported.has(msg) || reported.size >= 20) return
+  reported.add(msg)
+  fetch('/clientlog', { method:'POST', body: JSON.stringify(
+    { kind: 'error', msg, where: String(where || '').slice(0, 200) }) }).catch(() => {})
+}
+addEventListener('error', e => reportError(e.message, (e.filename || '').replace(location.origin, '') + ':' + e.lineno))
+addEventListener('unhandledrejection', e => reportError(e.reason?.message ?? e.reason, 'promise'))
+
 function tone(steps, gain = 0.06){
   if (!soundOn) return
   unlockAudio()
@@ -972,7 +986,7 @@ const soundDone  = () => tone([[784, 0, 0.18], [588, 0.12, 0.26]], 0.7)
 const soundNeeds = () => tone([[523, 0, 0.15], [784, 0.11, 0.15], [1046, 0.22, 0.26]], 0.9)
 
 /* ── rail ────────────────────────────────────────────────────────────────── */
-let dragId = null, armedKill = null, armedBranch = null, armTimer = null, lastSig = '', renaming = false
+let armedKill = null, armedBranch = null, armTimer = null, lastSig = '', renaming = false
 
 /* Branch groups. Which tabs are a group, and where a drop lands, are decided
    in groups.mjs — the very file the host imports and the tests run, loaded
@@ -1021,6 +1035,7 @@ function beginDrag(e, el, id){
   const box = el.getBoundingClientRect()
   const step = box.height + 1
   drag = { id, el, rows, idx, to: idx, step, startY: e.clientY, mid0: box.top + box.height / 2, moved: false }
+  holdPointer(el, e)
   /* With groups, travel maps onto groups.mjs's drop positions: each group
      edge costs half a row more (the doorway), and a tab you could group with
      holds still while you are over its middle. Without the module: rows, as ever. */
@@ -1028,16 +1043,30 @@ function beginDrag(e, el, id){
     const layout = G.dropLayout(sessions, id), gm = G.memberMap(sessions)
     Object.assign(drag, { layout, gm, group: gm.get(id) ?? null, pos: layout.origin, hold: null })
   }
-  el.setPointerCapture?.(e.pointerId)
-  /* On the WINDOW, not the row. These used to hang off the row element, and a
-     row is rebuilt by every paintRail — so a repaint mid-press detached the
-     element holding the handlers, the release went nowhere, and the drag
-     never ended. dragId stayed set, which refresh() reads as "mid-drag, do
-     not repaint", so the rail froze for good: dead sessions stayed listed and
-     no click could land. The window hears every release. */
+}
+
+/* Wires a press up, straight after `drag` is set and before anything that
+   could throw: a press whose listeners never attach can never end, and a
+   drag that never ends freezes the rail — no repaint, no poll — until the
+   page is reloaded.
+
+   On the WINDOW, not the row. These used to hang off the row element, and a
+   row is rebuilt by every paintRail — so a repaint mid-press detached the
+   element holding the handlers, the release went nowhere, and the drag never
+   ended. The window hears every release, and onDragMove ends a press whose
+   release it missed.
+
+   Capture is best effort. setPointerCapture THROWS "No active pointer" when
+   the press is already over by the time the page handles it — a quick click
+   or tap while the page is busy, say a terminal flooding output. It used to
+   run first and throw past the listeners: a rail frozen on a stale picture
+   for the rest of the evening (2026-10-05), its tabs still switching
+   underneath it because those go over the socket. */
+function holdPointer(el, e){
   addEventListener('pointermove', onDragMove)
   addEventListener('pointerup', endDrag)
   addEventListener('pointercancel', endDrag)
+  try { el.setPointerCapture?.(e.pointerId) } catch (err) { reportError('setPointerCapture: ' + err.message, 'drag') }
 }
 
 function onDragMove(e){
@@ -1051,7 +1080,7 @@ function onDragMove(e){
   const dy = e.clientY - drag.startY
   if (!drag.moved){
     if (Math.abs(dy) < DRAG_THRESHOLD) return      // still a click, not a drag
-    drag.moved = true; dragId = drag.id
+    drag.moved = true
     document.body.classList.add('rail-dragging')
     drag.el.classList.add('drag-src')
   }
@@ -1099,16 +1128,13 @@ function beginGroupDrag(e, wrap, handle){
            members: [...wrap.querySelectorAll(':scope > .sess')].map(r => r.dataset.id),
            rects: items.map(x => x.getBoundingClientRect()),
            step: box.height + parseFloat(cs.marginTop) + parseFloat(cs.marginBottom) + 1 }
-  handle.setPointerCapture?.(e.pointerId)
-  addEventListener('pointermove', onDragMove)
-  addEventListener('pointerup', endDrag)
-  addEventListener('pointercancel', endDrag)
+  holdPointer(handle, e)
 }
 function groupMove(e){
   const d = drag, dy = e.clientY - d.startY
   if (!d.moved){
     if (Math.abs(dy) < DRAG_THRESHOLD) return
-    d.moved = true; dragId = d.members[0]
+    d.moved = true
     document.body.classList.add('group-dragging'); d.el.classList.add('lifted')
   }
   d.el.style.transform = `translateY(${dy}px)`
@@ -1125,14 +1151,14 @@ function endGroupDrag(d, e){
   d.el.classList.remove('lifted')
   document.body.classList.remove('group-dragging')
   const owed = railOwed; railOwed = false
-  if (!d.moved){ dragId = null; if (owed) paintRail(); return }
-  if (d.to === d.idx){ dragId = null; paintRail(); return }
+  if (!d.moved){ if (owed) paintRail(); return }
+  if (d.to === d.idx){ paintRail(); return }
   /* Moving down it lands after the item at `to`, moving up before it: either
      way, before whatever sits at `to` once the group is lifted out. */
   const b = d.rows.filter(x => x !== d.el)[d.to]
   const before = b ? (b.matches('.grp') ? b.querySelector('.sess') : b).dataset.id : null
   const r = G.resolveGroupMove(sessions, d.members, before)
-  if (!r){ dragId = null; paintRail(); return }
+  if (!r){ paintRail(); return }
   applyDrop(r)
 }
 
@@ -1234,9 +1260,8 @@ async function endDrag(e){
   removeEventListener('pointercancel', endDrag)
   if (d.kind === 'group'){ endGroupDrag(d, e); return }
   /* Best effort: releasePointerCapture THROWS for a pointer id that is not
-     active, and a throw here stopped endDrag halfway — drag cleared but dragId
-     left set, which is the frozen-rail state all over again. This is the only
-     place that state gets cleared, so nothing in it may abort. */
+     active, and a throw here stopped endDrag halfway — the frozen-rail state
+     all over again. Nothing in here may abort. */
   if (d.el.isConnected) try { d.el.releasePointerCapture?.(e.pointerId) } catch {}
   if (d.hold) clearTimeout(d.hold.timer)
   for (const r of d.rows){
@@ -1246,15 +1271,14 @@ async function endDrag(e){
   d.el.classList.remove('drag-src', 'aiming', 'grouping')
   document.body.classList.remove('rail-dragging')
   const owed = railOwed; railOwed = false
-  if (!d.moved){ dragId = null; if (owed) paintRail(); return }   // it was a click after all
+  if (!d.moved){ if (owed) paintRail(); return }   // it was a click after all
   if (d.layout){ dropGrouped(d); return }
-  if (d.to === d.idx){ dragId = null; paintRail(); return }
+  if (d.to === d.idx){ paintRail(); return }
 
   const next = sessions.slice()
   const [moved] = next.splice(d.idx, 1)
   next.splice(d.to, 0, moved)
   sessions = next
-  dragId = null
   paintRail()                                       // optimistic: no wait, no flicker
   await writeLayout('/reorder?ids=' + sessions.map(x => x.id).join(','))
 }
@@ -1265,10 +1289,10 @@ async function endDrag(e){
 async function dropGrouped(d){
   const armed = d.hold?.armed
   const p = d.layout.positions[d.pos]
-  if (!armed && d.pos === d.layout.origin){ dragId = null; paintRail(); return }
+  if (!armed && d.pos === d.layout.origin){ paintRail(); return }
   const r = G.resolveDrop(sessions, d.id,
     armed ? { onto: d.layout.rows[d.hold.r].id } : { before: p.before, group: p.group })
-  if (!r){ dragId = null; paintRail(); return }
+  if (!r){ paintRail(); return }
   applyDrop(r)
 }
 /* What a tab's or a group's drop makes of the rail, applied here first so
@@ -1276,7 +1300,6 @@ async function dropGrouped(d){
 async function applyDrop(r){
   const byId = new Map(sessions.map(s => [s.id, s]))
   sessions = r.ids.map((id, i) => ({ ...byId.get(id), group: r.groups[i] || null }))
-  dragId = null
   paintRail()
   await writeLayout('/reorder?ids=' + r.ids.join(',') + '&groups=' + r.groups.join(','))
 }
@@ -1293,7 +1316,7 @@ async function writeLayout(path){
 }
 
 async function refresh(){
-  if (dragId || renaming) return                             // never repaint mid-drag
+  if (drag || renaming) return                               // never repaint mid-press
   const seq = layoutSeq
   const list = await api('/sessions'); if (!list) return
   // Across a layout write, or during one: the answer may predate it.
