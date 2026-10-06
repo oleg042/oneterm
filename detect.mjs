@@ -111,6 +111,8 @@ export const WORKING_LIVE = [
  * read "idle" with real work in flight: the main loop finishes, sits at an
  * empty prompt, and a backgrounded shell keeps running. The status line is the
  * only place that says so. Matched against the LIVE window. */
+/* One counted kind of background work in the status line's "Waiting for" list. */
+const WAIT_ITEM = String.raw`[1-9]\d*\s+(?:background\s+|dynamic\s+)?(?:agents?|workflows?|shells?|tasks?)`
 export const BACKGROUND = [
   /* Prose-proof: the status-line segment is followed by another middot or the
    * end of the line, whereas the TRANSCRIPT writes "· 1 shell still running",
@@ -129,7 +131,13 @@ export const BACKGROUND = [
    * "← N agents" counter — sampling all ten live sessions found "← 7 agents"
    * present on nine of them, including completely idle ones. A counter that
    * never returns to zero pins a session busy for life. */
-  /^\s*\S{0,2}\s*Waiting for [1-9]\d*\s+background agents?\s+to finish\s*$/m,
+  /* It is a LIST: Claude Code names every kind of background work in one line
+   * — "Waiting for 1 background agent and 1 dynamic workflow to finish". This
+   * took exactly "N background agents", so a line naming two kinds read as
+   * idle while a review workflow and an agent ran (2026-10-07). Now any counted
+   * agents, workflows, shells or tasks, joined by commas and "and". */
+  new RegExp(String.raw`^\s*\S{0,2}\s*Waiting for ${WAIT_ITEM}` +
+             String.raw`(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+)${WAIT_ITEM})*\s+to finish\s*$`, 'm'),
 ]
 /* "← N agents" is deliberately NOT a marker. Three minutes of sampling a live
  * session showed "1 shell · ← 7 agents" completely static, so it could not be

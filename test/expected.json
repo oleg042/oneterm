@@ -41,6 +41,14 @@
   "why": "both at once: a turn is running AND a background shell is alive",
   "working": true
  },
+ "status4_spin0_bgagent1_workflow1_prompt0_agentic.pane": {
+  "bg": true,
+  "decidedBy": "\u273b Waiting for 1 background agent and 1 dynamic workflow to finish",
+  "fg": false,
+  "waiting": false,
+  "why": "the main turn ended with an agent AND a review workflow still running. The status line lists both kinds in one line, and the pattern took only 'N background agents', so the rail read idle while 8 reviewers worked. Captured live from the Agentic systems session 2026-10-07, trimmed to the status area.",
+  "working": true
+ },
  "status4_spin0_bgagent1_prompt0_platen.pane": {
   "bg": true,
   "fg": false,

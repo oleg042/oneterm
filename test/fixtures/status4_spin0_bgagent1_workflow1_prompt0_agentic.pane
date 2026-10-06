@@ -1,0 +1,11 @@
+✻ Waiting for 1 background agent and 1 dynamic workflow to finish
+                                                                                                     ✔ Update installed · Restart to update
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  /Users/olegdeduchenko/Projects | Opus 5.5 | █████████░ 91%
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ⧉ 13 · ← 6 agents
+
+  ⏺ main
+  ◯ general-purpose               Listing prior probes and Docker images                                          11m 45s · ↓ 242.8k tokens
+  ◯ review-1.0b-1-events-on-pos…  ▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱  0/4 · 4m43s · ↓ 572.2k tokens

@@ -56,6 +56,8 @@ const mustNotWork = [
   ['  Ran 4 shell commands',                                     'the word shell with no status segment'],
   ['⏺ Something rather interesting…',                            'a sentence that happens to end in an ellipsis'],
   ['  ⏵⏵ auto mode on · ← 7 agents',                             'agents alone are NOT a working signal'],
+  ['  I am waiting for 2 reviewers to finish the pass.',         'prose about waiting, mid-sentence'],
+  ['⏺ Waiting for the build and the tests to finish',            'waiting with no count is prose, not status'],
 ]
 for (const [line, note] of mustNotWork) {
   const c = classify(line, 'claude')
@@ -70,6 +72,10 @@ const mustWork = [
   ['✳ Ideating…',                                   'fg', 'spinner before a timer appears'],
   ['  ⏵⏵ auto mode on · 2 shells · 1 feedback draft','bg', 'background shells, main loop idle'],
   ['  ⏵⏵ auto mode on · 1 shell',                   'bg', 'shells segment ending the line'],
+  ['✻ Waiting for 1 background agent to finish',    'bg', 'handed off to a background agent'],
+  ['✻ Waiting for 1 background agent and 1 dynamic workflow to finish', 'bg', 'an agent AND a workflow — read as idle'],
+  ['✻ Waiting for 1 dynamic workflow to finish',    'bg', 'a workflow on its own'],
+  ['✻ Waiting for 2 background agents, 1 dynamic workflow and 1 shell to finish', 'bg', 'a longer list'],
   ['… press esc to interrupt',                      'fg', 'the interrupt hint'],
 ]
 for (const [line, kind, note] of mustWork) {
