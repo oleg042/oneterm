@@ -15,13 +15,15 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { classify, liveTail, LIVE_LINES, paneWindow } from '../detect.mjs'
+import { classify, liveTail, LIVE_LINES, paneWindow, processTable, isInteractiveClaude,
+         runsClaude } from '../detect.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const expected = JSON.parse(readFileSync(join(HERE, 'expected.json'), 'utf8'))
 let pass = 0, fail = 0
 const ok  = m => { pass++; console.log(`  \x1b[32m✓\x1b[0m ${m}`) }
 const bad = m => { fail++; console.log(`  \x1b[31m✗\x1b[0m ${m}`) }
+const is  = (got, want, m) => got === want ? ok(m) : bad(`${m} — expected ${want}, got ${got}`)
 
 /* ── 1. real captured panes ─────────────────────────────────────────────── */
 console.log('\n1. real panes, against a human reading of each')
@@ -58,6 +60,9 @@ const mustNotWork = [
   ['  ⏵⏵ auto mode on · ← 7 agents',                             'agents alone are NOT a working signal'],
   ['  I am waiting for 2 reviewers to finish the pass.',         'prose about waiting, mid-sentence'],
   ['⏺ Waiting for the build and the tests to finish',            'waiting with no count is prose, not status'],
+  ['⏺ Compacting conversation history is what /compact does…',   'the compaction phrase inside a sentence'],
+  ['  Retrying in 5s did not help, so I stopped.',                'prose about retrying, no attempt counter'],
+  ['⏺ Waiting for API response was slow earlier',                'the stall phrase with no retry suffix'],
 ]
 for (const [line, note] of mustNotWork) {
   const c = classify(line, 'claude')
@@ -77,6 +82,17 @@ const mustWork = [
   ['✻ Waiting for 1 dynamic workflow to finish',    'bg', 'a workflow on its own'],
   ['✻ Waiting for 2 background agents, 1 dynamic workflow and 1 shell to finish', 'bg', 'a longer list'],
   ['… press esc to interrupt',                      'fg', 'the interrupt hint'],
+  /* 2026-10-14: each of these drew a blank pane for a live turn, and after 60s
+     the stale-hook fallback believed the blank and rang "done" mid-run. */
+  ['✻ Compacting conversation… (1m 34s · ↓ 1.2k tokens)', 'fg', 'auto-compaction, 64-166s long'],
+  ['✻ Compacting conversation…',                    'fg', 'compaction before its timer appears'],
+  ['✻ Running PreCompact hooks…',                   'fg', 'the hook phase around a compaction'],
+  ["✶ Beboppin'… (3m 1s · ↓ 5k tokens)",            'fg', 'a verb with an apostrophe'],
+  ['✶ Flambéing…',                                  'fg', 'a verb with an accent'],
+  ['· Sautéing… (12s · ↓ 3k tokens)',               'fg', 'the other accented verb'],
+  ['⚠ Waiting for API response · will retry in 5s · check your network', 'fg', 'the 20s stall banner'],
+  ['⚠ No response from the API after 25s · retrying, waiting up to 1m · attempt 2/10', 'fg', 'no first byte'],
+  ['⚠ API Error (529 overloaded) · Retrying in 5s · attempt 3/10', 'fg', 'an error being retried'],
 ]
 for (const [line, kind, note] of mustWork) {
   const c = classify(line, 'claude')
@@ -108,6 +124,45 @@ console.log('\n5. LIVE_LINES clears the expanded agent panel')
   liveTail(tail, 3).includes('shells')
     ? bad('the 3-line window would have caught it — fixture is not reproducing the bug')
     : ok('a 3-line window still misses it — the fixture reproduces the original bug')
+}
+
+/* ── 6. which tabs are running Claude ───────────────────────────────────── */
+/* The launch tag said "shell" for a claude typed by hand, so its own fullscreen
+ * redraws were judged by the shell rule and scrolling rang "done". These are
+ * the real process shapes from this machine (ps -axo pid=,ppid=,args=). */
+console.log('\n6. kind from the process table, not the launch tag')
+{
+  const ps = [
+    // wrapper-launched: zsh -c names claude in its ARGS only
+    "  100     1 /bin/zsh -l -c claude --dangerously-skip-permissions; stty sane 2>/dev/null",
+    "  101   100 claude --dangerously-skip-permissions",
+    "  102   101 npm exec @playwright/mcp@latest",
+    // typed by hand into the shell the wrapper left behind
+    "  200     1 /bin/zsh -l",
+    "  201   200 claude --name oneaway-app --resume 50ca3698-3fa0-4a83-b306-a60597746f77",
+    // exec'd: the pane's own process IS claude
+    "  300     1 claude --dangerously-skip-permissions",
+    // a shell tab running a script that calls the model and exits
+    "  400     1 /bin/zsh -l",
+    "  401   400 python3 run.py",
+    "  402   401 /Users/x/.local/bin/claude -p summarise this",
+    // a plain shell whose command line merely mentions claude
+    "  500     1 /bin/zsh -l",
+    "  501   500 grep -r claude .",
+    // invoked through the versions path
+    "  600     1 /bin/zsh -l",
+    "  601   600 /Users/x/.local/share/claude/versions/2.1.299",
+  ].join('\n')
+  const t = processTable(ps)
+  is(runsClaude(100, t), true,  'wrapper-launched claude is found under the wrapper shell')
+  is(runsClaude(200, t), true,  'THE REPORTED BUG: a claude typed by hand into an SH tab is found')
+  is(runsClaude(300, t), true,  "a pane whose own process is claude")
+  is(runsClaude(400, t), false, '`claude -p` from a script does not turn a shell tab into Claude')
+  is(runsClaude(500, t), false, 'a command line merely mentioning claude does not either')
+  is(runsClaude(600, t), true,  'claude run through its versions path')
+  is(runsClaude(999, t), false, 'an unknown pane pid is not claude')
+  is(isInteractiveClaude('/bin/zsh -l -c claude'), false, 'the wrapper shell itself is not claude')
+  is(processTable('').args.size, 0, 'an empty ps read is an empty table (the host then skips, never demotes)')
 }
 
 console.log(`\n─────────────────────────────\n  ${pass} passed, ${fail} failed`)

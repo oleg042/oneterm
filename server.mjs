@@ -25,11 +25,12 @@ import { WebSocketServer } from 'ws'
 import pty from 'node-pty'
 // Detection lives in its own module so test/detect.test.mjs runs the patterns
 // that actually ship, against panes captured from live sessions.
-import { classify, liveTail, LIVE_LINES, paneWindow } from './detect.mjs'
+import { classify, liveTail, LIVE_LINES, paneWindow, processTable, runsClaude } from './detect.mjs'
 // Same reason as detect.mjs: the tests must run the decision that ships, not a
 // copy of it. This one has been wrong twice, so it is the last place to allow
 // a second implementation to drift.
-import { hookWorking as agentsWorking, applyEvent, decideWorking } from './agentstate.mjs'
+import { hookWorking as agentsWorking, applyEvent, decideWorking, pruneAgents,
+         tailDiffArms } from './agentstate.mjs'
 // What a branch is called, which conversation it forks and where it lands —
 // pure, so test/branch.test.mjs runs the decisions that ship.
 import { branchLabel, conversationIdFromTranscript, orderAfter, CONV_ID } from './branch.mjs'
@@ -72,15 +73,16 @@ async function listSessions() {
   const fmt = ['#{session_name}', '#{session_created}', '#{session_attached}',
                '#{@oneterm_label}', '#{@oneterm_cwd}', '#{@oneterm_cmd}',
                '#{@oneterm_skip}', '#{@oneterm_order}', '#{@oneterm_group}',
-               '#{pane_current_path}'].join(D)
+               '#{pane_current_path}', '#{pane_pid}', '#{alternate_on}'].join(D)
   const out = await tmux(['list-sessions', '-F', fmt])
-  const FIELDS = 10
+  const FIELDS = 12
   return out.split('\n').filter(l => l.startsWith(PREFIX)).map(line => {
     const parts = line.split(D)
     // A row with the wrong field count means something injected the delimiter.
     // Drop it rather than render shifted fields as if they were real.
     if (parts.length !== FIELDS) { console.warn('[skip malformed row]', parts[0]); return null }
-    const [name, created, attached, label, cwd, cmd, skip, order, group, livePath] = parts
+    const [name, created, attached, label, cwd, cmd, skip, order, group, livePath,
+           panePid, alt] = parts
     return { id: name.slice(PREFIX.length), name,
              created: Number(created) * 1000, attached: attached !== '0',
              label: label || name, cmd: cmd || 'shell',
@@ -92,7 +94,9 @@ async function listSessions() {
              // THE path. A login shell can cd away from tmux's -c, so the
              // requested cwd is a wish and pane_current_path is the fact.
              // Showing the wish is how `rm -rf build/` hits the wrong tree.
-             cwd: livePath || cwd || '' }
+             cwd: livePath || cwd || '',
+             // For the kind check and the shell rule in annotateWaiting.
+             panePid: Number(panePid) || 0, alt: alt === '1' }
   }).filter(Boolean).sort((a, b) => {
     // explicit drag order first; anything never dragged falls back to age
     const ao = a.order, bo = b.order
@@ -148,6 +152,7 @@ const LATCH_CLAUDE = 12000
 const LATCH_SHELL  = 6000
 const workingUntil = new Map()
 const lastTail = new Map()
+const lastAlt = new Map()
 /* Attaching or resizing a pane makes tmux REFLOW its contents, which changes
  * the captured text without a single byte of new output. The tail-diff can't
  * tell that apart from real work, so a session flashed "working" the moment you
@@ -178,9 +183,10 @@ function panePulse(s, tail, c) {
      * not reliably tick for a DETACHED session, so a busy agent read as idle.
      * Comparing the tail works either way. */
     const settling = now < (settleUntil.get(s.name) ?? 0)
-    const prev = lastTail.get(s.name)
+    const prev = lastTail.get(s.name), prevAlt = lastAlt.get(s.name)
     lastTail.set(s.name, tail)
-    if (!settling && prev !== undefined && prev !== tail)
+    lastAlt.set(s.name, s.alt)
+    if (tailDiffArms({ prev, tail, settling, alt: s.alt, prevAlt }))
       workingUntil.set(s.name, now + latchMs)
   }
   return { latchMs, working: now < (workingUntil.get(s.name) ?? 0) }
@@ -228,6 +234,8 @@ async function loadHookState() {
            is ANY agent. Waiting for the next event to clean it up leaves that
            lie in place for however long the session stays quiet. */
         if (v?.agents?._ && Object.keys(v.agents).length > 1) { delete v.agents._; cleaned = true }
+        const n = Object.keys(v?.agents ?? {}).length
+        if (Object.keys(pruneAgents(v).agents ?? {}).length !== n) cleaned = true
         hookState.set(id, v)
       }
     }
@@ -256,7 +264,7 @@ function saveHookState() {
 }
 /* start -> a turn began · stop -> it ended · session -> just the id linkage.
  * SubagentStop never reaches here: the hook drops anything carrying agent_id. */
-function applyAgentEvent({ id, action, claudeSession, transcript, model, ctxPct, ctxSize, limits }) {
+function applyAgentEvent({ id, action, detail, claudeSession, transcript, model, ctxPct, ctxSize, limits }) {
   if (!id) return false
   const before = hookState.get(id)?.transcript
   const entry = applyEvent(hookState.get(id),
@@ -281,14 +289,14 @@ function applyAgentEvent({ id, action, claudeSession, transcript, model, ctxPct,
      It is also far too frequent to log. */
   if (action === 'status') { saveHookState(); return true }
 
-  /* A stop CLEARS the latch. That is what the event buys us: the pane's own
+  /* A stop — or the agent exiting — CLEARS the latch. That is what the event buys us: the pane's own
      verdict becomes authoritative immediately instead of 12 seconds later.
      If a turn is genuinely still running the next poll re-arms it. */
-  if (action === 'stop' && hookWorking(id) === false) workingUntil.delete(PREFIX + id)
+  if ((action === 'stop' || action === 'end') && hookWorking(id) !== true) workingUntil.delete(PREFIX + id)
   hookQuiet.delete(PREFIX + id)
   saveHookState()
   const w = hookWorking(id)
-  console.log(`[hook] ${id} ${action}`
+  console.log(`[hook] ${id} ${action}${detail ? `(${detail})` : ''}`
     + (w === undefined ? '' : ` working=${w ? 1 : 0}`)
     + (Object.keys(entry.agents).length > 1 ? ` (${Object.keys(entry.agents).length} agents)` : ''))
   return true
@@ -379,7 +387,46 @@ function layoutWrite(fn) {
   return run
 }
 
+/* A tab's kind follows what is RUNNING in it, read from the process table
+ * (see runsClaude in detect.mjs for why not the launch tag or tmux's
+ * pane_current_command). Promotion is immediate: a claude in the tree is a
+ * fact. Demotion waits for two polls in a row and a tab older than the
+ * login shell's startup, because a claude tab is briefly claude-less while
+ * `zsh -l` reads its rc files — and demoting it there would flash SH and
+ * switch it to the shell rule for its first seconds. The wrapper still
+ * demotes on exit as before; this catches the claude typed by hand. */
+const KIND_GRACE_MS = 15000
+const kindMiss = new Map()       // name -> consecutive polls a claude tab showed no claude
+async function reconcileKinds(list) {
+  let table
+  try {
+    table = processTable((await execFileP('ps', ['-axo', 'pid=,ppid=,args='],
+                                          { maxBuffer: 16 * 1024 * 1024 })).stdout)
+  } catch { return }
+  // An empty table is a failed read, not a machine with no claude on it —
+  // acting on it would demote every tab at once.
+  if (table.args.size === 0) return
+  const now = Date.now()
+  for (const s of list) {
+    if (!s.panePid) continue
+    const live = runsClaude(s.panePid, table)
+    if (live || s.cmd !== 'claude') kindMiss.delete(s.name)
+    else kindMiss.set(s.name, (kindMiss.get(s.name) ?? 0) + 1)
+    const next = live ? 'claude'
+      : (s.cmd === 'claude' && kindMiss.get(s.name) >= 2 && now - s.created > KIND_GRACE_MS) ? 'shell'
+      : s.cmd
+    if (next === s.cmd) continue
+    console.log(`[kind] ${s.name} ${s.cmd}->${next} (process tree)`)
+    s.cmd = next
+    kindMiss.delete(s.name)
+    tmux(['set-option', '-t', s.name, '@oneterm_cmd', next])   // tmux is the store
+    // Whatever the old rule latched or baselined belongs to the old rule.
+    workingUntil.delete(s.name); lastTail.delete(s.name); lastAlt.delete(s.name)
+  }
+}
+
 async function annotateWaiting(list) {
+  await reconcileKinds(list)
   await Promise.all(list.map(async (s) => {
     try {
       const tail = await paneTail(s.name)
@@ -398,6 +445,8 @@ async function annotateWaiting(list) {
       s.waiting   = c.waiting
       s.latchMs   = d.latched ? pane.latchMs : 0  // an event needs no blink tolerance
       s.stateFrom = d.from                        // the ACTUAL decider
+      // What says it is not working — the page only chimes on evidence.
+      s.endedBy   = s.working ? null : d.endedBy
 
       /* Reported by the status line, not inferred here. Undefined until the
          first render arrives — the rail draws nothing rather than a zero,
@@ -428,6 +477,7 @@ async function annotateWaiting(list) {
          it left the previous value in place, so the next real transition was
          logged with the wrong "from". */
       s.waiting = false; s.working = false
+      s.endedBy = 'unknown'                       // a failed read is not evidence of an ending
       logState(s, 'capture failed: ' + (e?.message ?? e), '')
     }
   }))
@@ -435,6 +485,8 @@ async function annotateWaiting(list) {
   // process designed to run for weeks.
   const live = new Set(list.map(s => s.name))
   for (const k of lastTail.keys())     if (!live.has(k)) lastTail.delete(k)
+  for (const k of lastAlt.keys())      if (!live.has(k)) lastAlt.delete(k)
+  for (const k of kindMiss.keys())     if (!live.has(k)) kindMiss.delete(k)
   for (const k of settleUntil.keys())  if (!live.has(k)) settleUntil.delete(k)
   for (const k of workingUntil.keys()) if (!live.has(k)) workingUntil.delete(k)
   for (const k of prevState.keys())    if (!live.has(k)) prevState.delete(k)
@@ -1046,6 +1098,10 @@ async function route(req, res) {
       m.ctxPct = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : undefined
     }
     if (m.model !== undefined) m.model = String(m.model).replace(/\s+/g, ' ').trim().slice(0, 24)
+    // Why the event fired — SessionStart's source, SessionEnd's reason, a
+    // compaction's trigger. Logged only, and only in a shape that cannot
+    // smuggle anything into a log line.
+    m.detail = /^[a-z_]{1,24}$/.test(m.detail ?? '') ? m.detail : undefined
     /* Rebuild the limits object from scratch rather than forwarding what was
        sent: only these three windows are known, only two numbers each, and
        both are drawn into the DOM and persisted. An unbounded object here

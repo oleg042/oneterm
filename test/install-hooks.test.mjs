@@ -34,6 +34,11 @@ const settingsOf = home => JSON.parse(readFileSync(join(home, 'settings.json'), 
 const ourHooks = s => Object.entries(s.hooks ?? {}).flatMap(([ev, arr]) =>
   arr.flatMap(e => (e.hooks ?? []).filter(h => h.command?.includes('oneterm-agent-state')).map(() => ev)))
 
+/* Every event we register. A turn boundary missing from this list is a state
+ * the host can only guess at — that guess is what rang "done" mid-compaction. */
+const OURS = ['PostCompact', 'PreCompact', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure',
+              'UserPromptSubmit']
+
 /* A real herdr entry, copied from the shape actually installed on this machine. */
 const HERDR = {
   hooks: {
@@ -50,9 +55,9 @@ console.log('\n1. a brand new machine — no ~/.claude/settings.json at all')
   run(home)
   const s = settingsOf(home)
   const evs = ourHooks(s).sort()
-  JSON.stringify(evs) === JSON.stringify(['SessionStart', 'Stop', 'UserPromptSubmit'])
-    ? ok('creates settings.json with all three events')
-    : bad(`expected 3 events, got ${JSON.stringify(evs)}`)
+  JSON.stringify(evs) === JSON.stringify(OURS)
+    ? ok(`creates settings.json with all ${OURS.length} events`)
+    : bad(`expected ${JSON.stringify(OURS)}, got ${JSON.stringify(evs)}`)
   existsSync(join(home, 'hooks', 'oneterm-agent-state.sh'))
     ? ok('copies the hook script into ~/.claude/hooks/')
     : bad('hook script was not copied')
@@ -68,7 +73,7 @@ console.log('\n2. settings.json exists but has no hooks block')
   s.model === 'opus' && s.theme === 'dark'
     ? ok('unrelated settings survive untouched')
     : bad('clobbered unrelated settings')
-  ourHooks(s).length === 3 ? ok('adds our three events') : bad('did not add our events')
+  ourHooks(s).length === OURS.length ? ok(`adds our ${OURS.length} events`) : bad('did not add our events')
 }
 
 console.log('\n3. another tool already owns a hook (the herdr case)')
@@ -79,7 +84,7 @@ console.log('\n3. another tool already owns a hook (the herdr case)')
   const herdrStill = JSON.stringify(s.hooks.SessionStart)
     .includes('herdr-agent-state.sh')
   herdrStill ? ok("herdr's hook survives") : bad("herdr's hook was destroyed")
-  ourHooks(s).length === 3 ? ok('ours added alongside it') : bad('ours missing')
+  ourHooks(s).length === OURS.length ? ok('ours added alongside it') : bad('ours missing')
   s.hooks.SessionStart.length === 2
     ? ok('SessionStart now holds both entries, not one overwriting the other')
     : bad(`SessionStart has ${s.hooks.SessionStart.length} entries`)
@@ -90,8 +95,8 @@ console.log('\n4. running the installer twice (upgrade / repair)')
   const home = fakeHome(JSON.stringify(HERDR, null, 2))
   run(home); run(home); run(home)
   const s = settingsOf(home)
-  ourHooks(s).length === 3
-    ? ok('three runs still leave exactly 3 of our hooks — no duplicates')
+  ourHooks(s).length === OURS.length
+    ? ok(`three runs still leave exactly ${OURS.length} of our hooks — no duplicates`)
     : bad(`duplicated: ${ourHooks(s).length} entries after 3 runs`)
   JSON.stringify(s.hooks.SessionStart).includes('herdr')
     ? ok("herdr still there after three runs") : bad('herdr lost on re-run')

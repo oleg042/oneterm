@@ -60,6 +60,25 @@ export const WAITING = [
  * forever and a session stuck on "working". Detect the POSITIVE markers it
  * prints only while a turn is running instead.
  * These are matched against the WHOLE tail. */
+/* What may sit in the spinner slot before the ellipsis.
+ *
+ * A single word, as before — that is still what separates the spinner from a
+ * transcript sentence that happens to end in "…". But a LETTER, not [A-Za-z]:
+ * Claude Code's verb list has "Beboppin'", "Flambéing" and "Sautéing", and the
+ * verb is picked once per turn, so a turn that drew one of those was invisible
+ * from its first second to its last. The hook's start held it for 60s, then the
+ * stale-hook fallback believed the blank pane and rang "done" on a turn that was
+ * still running. Checked against all 189 verbs in the 2.1.299 binary.
+ *
+ * Plus Claude Code's own multi-word system messages, which use the same slot.
+ * "Compacting conversation…" is drawn for the WHOLE of an auto-compaction —
+ * 64 to 166 seconds across 81 compactions in the transcripts — and read as an
+ * idle pane, which is how a working tab chimed "done" mid-run (2026-10-14).
+ * The hook phases around it draw "Running PreCompact hooks…" and friends. */
+const VERB = String.raw`\p{L}[\p{L}\p{N}_'’-]*`
+const SYSTEM_SPINNER = String.raw`Compacting conversation|Running (?:PreCompact|PostCompact|SessionStart) hooks`
+const SPIN = `(?:${SYSTEM_SPINNER}|${VERB})`
+
 export const WORKING = [
   /esc to interrupt/i,
   /* /still (thinking|working)/i was here and had to go: it is PROSE, not a
@@ -90,12 +109,22 @@ export const WORKING = [
    * lines above a live spinner in a real pane, so any window wide enough to
    * reach the real marker also swallowed the fake one. Only the spinner slot
    * puts "word… (elapsed" at the head of its own line. */
-  /^\s*(?:\S{1,2}\s+)?[A-Za-z][\w-]*…\s*\((?:\d+[hms]\s*)+[·)]/m,
+  new RegExp(String.raw`^\s*(?:\S{1,2}\s+)?${SPIN}…\s*\((?:\d+[hms]\s*)+[·)]`, 'mu'),
   /* The spinner GLYPH animates through a set we cannot enumerate reliably, so
    * match the SHAPE instead: a mark, a word ending in an ellipsis, then the
    * timer's opening paren. Enumerating glyphs made detection blink at
    * animation speed, and every blink read as "the run finished". */
-  /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*\(/m,
+  new RegExp(String.raw`^\s*\S{1,2}\s+${SPIN}…\s*\(`, 'mu'),
+  /* API trouble REPLACES the spinner line rather than sitting beside it, so a
+   * turn stalled on the network showed no marker at all — and Claude Code
+   * raises the stall banner after only 20s without a streamed byte. Each is
+   * matched on its own structure (the "·"-separated retry suffix), never on
+   * the phrase alone, so prose about retrying cannot pin a session busy. The
+   * other two banners ("next try in … · esc to interrupt") are already caught
+   * by the interrupt hint above. */
+  /^\s*\S{0,2}\s*Waiting for API response\s*·\s*will retry in\b/mu,
+  /^\s*\S{0,2}\s*No response from the API after\b[^\n]*·\s*retrying\b/mu,
+  /·\s*Retrying in [^·\n]{1,40}·\s*attempt \d+\/\d+\s*$/mu,
 ]
 
 /* Matched against the LIVE window only. */
@@ -104,7 +133,7 @@ export const WORKING_LIVE = [
    * requires a "(" on the line, so the opening stretch of every turn was
    * invisible. Single word before the ellipsis on purpose: that is what
    * separates the spinner slot from a transcript sentence ending in one. */
-  /^\s*\S{1,2}\s+[A-Za-z][\w-]*…\s*$/m,
+  new RegExp(String.raw`^\s*\S{1,2}\s+${SPIN}…\s*$`, 'mu'),
 ]
 
 /* Everything above describes the FOREGROUND turn, which is why a session could
@@ -165,4 +194,54 @@ export function classify(tail, cmd) {
     working: !!(fgRe || bgRe),
     why: String(fgRe ?? bgRe ?? waitRe ?? 'no marker'),
   }
+}
+
+/* ── which tabs are running Claude Code ───────────────────────────────────
+ * A tab's kind (@oneterm_cmd) was decided once, at launch, and only ever moved
+ * claude -> shell, when the claude it launched exited. Typing `claude` back
+ * into that shell — which the exit message itself tells you to do — left the
+ * tab wearing SH while Claude ran in it, so it was judged by the shell rule:
+ * any change on screen is work. Claude's fullscreen view redraws on every
+ * scroll, and scrolling an idle tab rang "done" (2026-10-14).
+ *
+ * The process table is the fact. pane_current_command is not: it reads "zsh"
+ * for a claude the wrapper launched and a version string ("2.1.282") for one
+ * typed by hand. argv[0] is "claude" either way. */
+
+/** Parse `ps -axo pid=,ppid=,args=` into parent links and command lines. */
+export function processTable(psText) {
+  const args = new Map(), kids = new Map()
+  for (const line of String(psText).split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/)
+    if (!m) continue
+    const pid = Number(m[1]), ppid = Number(m[2])
+    args.set(pid, m[3])
+    if (!kids.has(ppid)) kids.set(ppid, [])
+    kids.get(ppid).push(pid)
+  }
+  return { args, kids }
+}
+
+/* An INTERACTIVE claude. `claude -p` is a script calling the model and exiting
+ * — a shell tab running a job that shells out to it is still a shell tab. And
+ * the wrapper's own `zsh -l -c claude …` names claude only in its arguments,
+ * so argv[0] is what is checked, never the whole line. */
+export function isInteractiveClaude(cmdline) {
+  const argv = String(cmdline).trim().split(/\s+/)
+  if (!/(?:^|\/)claude$|\/claude\/versions\/[^/]+$/.test(argv[0] ?? '')) return false
+  return !argv.some(a => a === '-p' || a === '--print')
+}
+
+/** Is an interactive claude this pane's process or any descendant of it? */
+export function runsClaude(panePid, table) {
+  const seen = new Set(), stack = [Number(panePid)]
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    const cmd = table.args.get(pid)
+    if (cmd !== undefined && isInteractiveClaude(cmd)) return true
+    stack.push(...(table.kids.get(pid) ?? []))
+  }
+  return false
 }

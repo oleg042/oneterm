@@ -1315,6 +1315,21 @@ async function writeLayout(path){
   try { return await post(path) } finally { layoutWriting--; layoutSeq++ }
 }
 
+/* What the host says ended the run. Only these two are evidence; 'stale' is the
+   host giving up on a Stop that never came, and 'unknown' a failed read. */
+const endedForReal = s => s.endedBy === 'stop' || s.endedBy === 'pane'
+const COOLDOWN = 12000                  // at most one chime per session per this
+
+function doneChime(s, a, now, extra){
+  a.doneUnseen = true
+  if (a.notified || now - (a.lastChime ?? 0) <= COOLDOWN) return
+  a.notified = true; a.lastChime = now
+  notifyDone(s.id)
+  const claimed = claimChime('done:' + s.id)
+  if (claimed) soundDone()
+  note('done', s, { ...extra, quiet: a.quiet, latchMs: s.latchMs, endedBy: s.endedBy, claimed })
+}
+
 async function refresh(){
   if (drag || renaming) return                               // never repaint mid-press
   const seq = layoutSeq
@@ -1328,14 +1343,21 @@ async function refresh(){
        at random. Requirements:
          · a run must have lasted >= MIN_RUN before "done" can chime
          · "needs you" must hold for 2 consecutive polls
-         · at most one chime per session per COOLDOWN */
+         · at most one chime per session per COOLDOWN
+         · "done" needs EVIDENCE of the ending (s.endedBy, see decideWorking):
+           a Stop from Claude Code, or the screen of a tab with no hook. When
+           the host merely gave up waiting for a Stop, the tab goes idle in
+           silence — that guess rang "done" mid-compaction, 180 times in the
+           log and wrong at least 115 of them. If the real Stop lands later,
+           THAT is the ending, and it chimes then. */
     const now = Date.now()
-    const MIN_RUN = 4000, COOLDOWN = 12000, HOLD = 2
+    const MIN_RUN = 4000, HOLD = 2
 
     if (s.working){
       if (!a.wasWorking) a.workStart = now       // start of a real run
       a.doneUnseen = false; a.notified = false
       a.quiet = 0
+      a.unconfirmed = undefined                  // the run came back; its end is a fresh question
     } else if (a.wasWorking) {
       a.quiet = (a.quiet ?? 0) + 1
     }
@@ -1349,16 +1371,21 @@ async function refresh(){
          what made the latch unsafe to lengthen before. */
       const ranFor = now - (a.workStart ?? now) - (s.latchMs ?? 0)
       if (ranFor >= MIN_RUN){
-        a.doneUnseen = true
-        if (!a.notified && now - (a.lastChime ?? 0) > COOLDOWN){
-          a.notified = true; a.lastChime = now
-          notifyDone(s.id)
-          const claimed = claimChime('done:' + s.id)
-          if (claimed) soundDone()
-          note('done', s, { ranFor, quiet: a.quiet, latchMs: s.latchMs, claimed })
+        if (endedForReal(s)) doneChime(s, a, now, { ranFor })
+        else {
+          a.unconfirmed = a.workStart              // idle on screen, but owed a real ending
+          note('unconfirmed', s, { ranFor, endedBy: s.endedBy })
         }
       }
       a.wasWorking = false      // the run is over; do not re-evaluate it
+    }
+    /* A run we went quiet on, settled. A real Stop now is the ending we were
+       owed. Anything else — the claude exiting, a failed read — closes the
+       question without a sound. */
+    if (a.unconfirmed !== undefined && !s.working && s.endedBy !== 'stale'){
+      if (s.endedBy === 'stop' && !s.waiting)
+        doneChime(s, a, now, { ranFor: now - a.unconfirmed, confirmedLate: true })
+      a.unconfirmed = undefined
     }
     // blocked on a human: only after it has held for two polls running
     a.waitStreak = s.waiting ? (a.waitStreak ?? 0) + 1 : 0

@@ -67,6 +67,20 @@ else
   ok "a payload carrying agent_id is dropped before reporting"
 fi
 
+# ── the newer events get through, and say why they fired ──────────────────
+# progress (PreCompact/PostCompact) and end (SessionEnd) were added after a
+# compaction read as an ended turn. A gate that still dropped them would make
+# the installer's registration a silent no-op.
+for A in progress end; do
+  OUT=$(echo '{"session_id":"s1"}' | ONETERM=1 ONETERM_SESSION=probe ONETERM_PORT=9 sh -x "$HOOK" "$A" 2>&1)
+  echo "$OUT" | grep -q 'curl' && ok "'$A' reaches the reporting step" \
+                               || bad "'$A' was dropped at the gate"
+done
+OUT=$(echo '{"session_id":"s1","source":"compact"}' \
+      | ONETERM=1 ONETERM_SESSION=probe ONETERM_PORT=9 sh -x "$HOOK" session 2>&1)
+echo "$OUT" | grep -q '"detail": "compact"' && ok "SessionStart's source rides along as detail" \
+                                           || bad "detail missing from the body"
+
 echo
 echo "─────────────────────────────"
 echo "  $PASS passed, $FAIL failed"

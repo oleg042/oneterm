@@ -84,12 +84,48 @@ export function applyEvent(entry, { action, claudeSession, transcript, model, ct
      session id shows up for this session, '_' can only be stale — and a stale
      bucket stuck on working=true pins the session busy through the OR above. */
   if (claudeSession && entry.agents._) delete entry.agents._
+  /* SessionEnd: that claude is gone — exited, /clear'd into a new session id,
+     or logged out. Its bucket can only be stale from here, and a stale bucket
+     left on working=true pins the session busy through the OR in hookWorking. */
+  if (action === 'end') { delete entry.agents[key]; return pruneAgents(entry, now) }
   const agent = (entry.agents[key] ??= {})
   agent.at = now
   if (action === 'start') agent.working = true
   else if (action === 'stop') agent.working = false
-  // 'session' carries no working state — it only links our id to Claude's.
+  /* 'session' carries no working state — it only links our id to Claude's.
+     'progress' (PreCompact, PostCompact) says only "this turn is still alive":
+     it keeps the bucket fresh, and the server takes it as the sign of life
+     that restarts the missed-Stop clock. A manual /compact fires it with no
+     turn running, which is why it must never set working itself. */
+  return pruneAgents(entry, now)
+}
+
+/* Buckets past the TTL were already ignored by hookWorking, but nothing ever
+ * deleted them — two from a nested claude that died mid-turn sat on
+ * working=true in agent-state.json for 8.7 days. Ignored is not gone: they
+ * cost a line in every [hook] log ("(4 agents)") and were one clock skew away
+ * from counting again. */
+export function pruneAgents(entry, now = Date.now(), ttlMs = AGENT_TTL_MS) {
+  for (const [k, a] of Object.entries(entry?.agents ?? {})) {
+    if (a?.at !== undefined && now - a.at >= ttlMs) delete entry.agents[k]
+  }
   return entry
+}
+
+/**
+ * The SHELL rule: with no run marker to read, "the pane changed since the last
+ * poll" is the signal. Returns whether this poll arms the working latch.
+ *
+ * Not on the alternate screen. A fullscreen program — less, vim, htop, Claude
+ * Code's own renderer — redraws when you scroll or page through it, and that
+ * read as work: paging a long file for 4.5s rang "done" for a tab that never
+ * ran anything. Nor on the poll where the alternate screen was entered or
+ * left, because the swap itself rewrites the whole pane.
+ */
+export function tailDiffArms({ prev, tail, settling, alt, prevAlt }) {
+  if (settling || prev === undefined || prev === tail) return false
+  if (alt || prevAlt) return false
+  return true
 }
 
 /**
@@ -97,21 +133,35 @@ export function applyEvent(entry, { action, claudeSession, transcript, model, ct
  *
  * THE RULE: the hook may only ever ADD "working". It can never veto the pane.
  * A hook event is proof that something happened, never proof that nothing is.
+ *
+ * endedBy says, for a session that is NOT working, what says so — because the
+ * page rings "done" on that edge, and only some answers are evidence:
+ *   'stop'  — Claude Code's Stop hook fired. A fact.
+ *   'pane'  — no hook to go on (a shell, or a session predating the install);
+ *             the screen is all there is, as it always was.
+ *   'stale' — the hook said a turn started, nothing said it ended, and the
+ *             pane has shown no marker for missedStopMs. A GUESS that the Stop
+ *             was lost. Right after an Esc (which fires no Stop) or a host
+ *             restart; wrong whenever a live turn draws something the
+ *             patterns do not know — which rang "done" mid-compaction
+ *             (2026-10-14). The page goes idle on it but stays silent.
  */
 export function decideWorking({ hook, paneWorking, regexWorking, quietSince,
                                 now = Date.now(), missedStopMs = MISSED_STOP_MS }) {
   if (hook === true) {
     if (paneWorking || regexWorking) {
-      return { working: true, from: 'hook', why: 'hook:working', quietSince: null, latched: false }
+      return { working: true, from: 'hook', why: 'hook:working', quietSince: null, latched: false, endedBy: null }
     }
     // Hook says running, pane says nothing. Usually a quiet moment mid-turn —
     // but a Stop fired while the host was restarting is gone for good, so
     // after missedStopMs stop believing it rather than pin the session busy.
     const since = quietSince ?? now
     if (now - since > missedStopMs) {
-      return { working: regexWorking, from: 'regex', why: 'regex — hook start looks stale', quietSince: since, latched: true }
+      return { working: regexWorking, from: 'regex', why: 'regex — hook start looks stale', quietSince: since,
+               latched: true, endedBy: 'stale' }
     }
-    return { working: true, from: 'hook', why: 'hook:working (pane quiet)', quietSince: since, latched: false }
+    return { working: true, from: 'hook', why: 'hook:working (pane quiet)', quietSince: since, latched: false,
+             endedBy: null }
   }
   // Stopped, or never heard from: the PANE decides. This branch is the escape
   // hatch whose absence caused failure (1) above.
@@ -123,5 +173,6 @@ export function decideWorking({ hook, paneWorking, regexWorking, quietSince,
       : undefined,
     quietSince: null,
     latched: true,
+    endedBy: hook === false ? 'stop' : 'pane',
   }
 }

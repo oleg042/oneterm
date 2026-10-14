@@ -2,7 +2,8 @@
 /* The hook/pane state machine. Every case here is a bug that actually reached
  * the user, or the exact thing a reviewer said would.
  *   node test/agentstate.test.mjs */
-import { hookWorking, applyEvent, decideWorking } from '../agentstate.mjs'
+import { hookWorking, applyEvent, decideWorking, pruneAgents, tailDiffArms,
+         AGENT_TTL_MS } from '../agentstate.mjs'
 
 let pass = 0, fail = 0
 const ok  = m => { pass++; console.log(`  \x1b[32m✓\x1b[0m ${m}`) }
@@ -182,6 +183,78 @@ console.log('\n10. rate-limit windows are stamped so the freshest can win')
   applyEvent(b, { action: 'status', ctxPct: 2 }, 3000)
   is(b.limits.seven_day.pct, 71, 'a status report without limits leaves them alone')
   is(b.limitsAt, 2000, 'and does not re-stamp them as fresh')
+}
+
+console.log('\n11. the events added after a compaction read as an ended turn')
+{
+  const e = applyEvent(undefined, { action: 'start', claudeSession: 's1' }, 1000)
+  applyEvent(e, { action: 'progress', claudeSession: 's1' }, 2000)
+  is(hookWorking(e, 2000), true, 'PreCompact mid-turn leaves the turn running')
+  is(e.agents.s1.at, 2000, 'and keeps its bucket fresh')
+  const idle = applyEvent(undefined, { action: 'stop', claudeSession: 's1' }, 1000)
+  applyEvent(idle, { action: 'progress', claudeSession: 's1' }, 2000)
+  is(hookWorking(idle, 2000), false, 'a manual /compact on an idle session does NOT start a turn')
+
+  applyEvent(e, { action: 'start', claudeSession: 's2' }, 3000)
+  applyEvent(e, { action: 'end', claudeSession: 's2' }, 4000)
+  is(Object.keys(e.agents).join(','), 's1', 'SessionEnd forgets exactly that claude')
+  applyEvent(e, { action: 'end', claudeSession: 's1' }, 5000)
+  is(hookWorking(e, 5000), undefined,
+     'the last claude exiting mid-turn hands the session back to the pane — never pinned busy')
+}
+
+console.log('\n12. dead buckets are deleted, not just ignored')
+{
+  const HOUR = 3600_000, now = 300 * HOUR
+  // The shape found in agent-state.json: two working buckets 8.7 days old.
+  const e = { agents: { dead1: { working: true, at: now - 209 * HOUR },
+                        dead2: { working: true, at: now - 209 * HOUR },
+                        live:  { working: false, at: now - 60_000 } } }
+  pruneAgents(e, now)
+  is(Object.keys(e.agents).join(','), 'live', 'pruning drops the expired buckets and keeps the live one')
+  const f = { agents: { dead: { working: true, at: 0 } } }
+  applyEvent(f, { action: 'stop', claudeSession: 'next' }, AGENT_TTL_MS + 1)
+  is(Object.keys(f.agents).join(','), 'next', 'any event clears expired siblings as it lands')
+  const g = { agents: { slow: { working: true, at: now - 40 * 60_000 } } }
+  pruneAgents(g, now)
+  is(hookWorking(g, now), true, 'a 40-minute quiet turn is NOT pruned')
+}
+
+console.log('\n13. the shell rule: a changed pane is work, except on a fullscreen screen')
+{
+  const base = { prev: 'a', tail: 'b', settling: false, alt: false, prevAlt: false }
+  is(tailDiffArms(base), true, 'output in a plain shell arms the latch')
+  is(tailDiffArms({ ...base, tail: 'a' }), false, 'an unchanged pane does not')
+  is(tailDiffArms({ ...base, prev: undefined }), false, 'the first sight is a baseline, not work')
+  is(tailDiffArms({ ...base, settling: true }), false, 'nor a reflow while settling')
+  is(tailDiffArms({ ...base, alt: true, prevAlt: true }), false,
+     'THE REPORTED BUG: scrolling a fullscreen program (Claude, less, vim) is not work')
+  is(tailDiffArms({ ...base, alt: true }), false, 'entering the alternate screen is not work')
+  is(tailDiffArms({ ...base, prevAlt: true }), false, 'leaving it (quitting less) is not work')
+}
+
+console.log('\n14. what says it ended — the page only chimes on evidence')
+{
+  const t0 = 100_000
+  const stale = decide({ hook: true, paneWorking: false, regexWorking: false, quietSince: t0, now: t0 + MS + 1 })
+  is(stale.endedBy, 'stale', 'THE REPORTED BUG: giving up on a Stop is labelled a guess, not an ending')
+  is(decide({ hook: false, paneWorking: false, regexWorking: false }).endedBy, 'stop',
+     "Claude's own Stop is evidence")
+  is(decide({ hook: undefined, paneWorking: false, regexWorking: false }).endedBy, 'pane',
+     'a tab with no hook keeps chiming off its screen, as before')
+  const quiet = decide({ hook: true, paneWorking: false, regexWorking: false, quietSince: t0, now: t0 + 1 })
+  is(quiet.working && quiet.endedBy === null, true, 'a quiet moment inside the window is still working, no ending')
+
+  // Exhaustively: 'stale' can only come from a hook that said start and never stop.
+  let leaks = 0
+  for (const hook of [true, false, undefined])
+    for (const regexWorking of [true, false])
+      for (const now of [t0 + 1, t0 + MS + 1]) {
+        const d = decide({ hook, paneWorking: regexWorking, regexWorking, quietSince: t0, now })
+        if (d.endedBy === 'stale' && hook !== true) leaks++
+        if (!d.working && !['stop', 'pane', 'stale'].includes(d.endedBy)) leaks++
+      }
+  is(leaks, 0, "every idle answer names its evidence, and only a hook start can be 'stale'")
 }
 
 console.log(`\n─────────────────────────────\n  ${pass} passed, ${fail} failed`)

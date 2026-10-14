@@ -40,12 +40,17 @@ const SL_MARK  = 'oneterm-statusline'
 
 /* Only events that are PROVEN to exist — SessionStart and Stop are both used by
  * herdr's shipped integration, UserPromptSubmit is documented by the hookify
- * plugin. SubagentStop is deliberately absent: it can fire after the main turn
- * has already ended and would revive a finished session. */
+ * plugin, and the rest are in the hook-event list of the 2.1.299 binary.
+ * SubagentStop is deliberately absent: it can fire after the main turn has
+ * already ended and would revive a finished session. */
 const EVENTS = {
   SessionStart:     'session',   // link our id to Claude's session id
   UserPromptSubmit: 'start',     // a turn began
   Stop:             'stop',      // the turn ended — this is the "done" edge
+  StopFailure:      'stop',      // ...ended by an API error, which skips Stop
+  PreCompact:       'progress',  // compaction: minutes of a live turn with
+  PostCompact:      'progress',  //   nothing else to say it is still alive
+  SessionEnd:       'end',       // that claude exited or was /clear'd away
 }
 
 const uninstall = process.argv.includes('--uninstall')

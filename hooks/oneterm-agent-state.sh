@@ -41,16 +41,21 @@ ACTION="${1:-}"
 PORT="${ONETERM_PORT:-7331}"
 
 # --- which events mean what ------------------------------------------------
-# start  : a turn began            -> working
-# stop   : the turn ended          -> not working  (this is the "done" edge)
-# session: a session was created   -> link our id to Claude's session id
+# start   : a turn began            -> working
+# stop    : the turn ended          -> not working  (this is the "done" edge)
+#           Also StopFailure: a turn killed by an API error never fires Stop,
+#           and was left "working" until a 60s timeout guessed otherwise.
+# session : a session was created   -> link our id to Claude's session id
+# progress: PreCompact / PostCompact -> the turn is alive, no state change.
+#           Auto-compaction runs 1-3 minutes with no other event at all.
+# end     : SessionEnd              -> that claude is gone; forget its state
 #
 # SubagentStop is deliberately NOT mapped. It is a completion event that Claude
 # can emit AFTER the main turn has already finished (recap / away-summary), so
 # treating it as a state change lets a finished session flap back to working —
 # which is exactly the false "done" chime that made this rewrite necessary.
 case "$ACTION" in
-  start|stop|session) ;;
+  start|stop|session|progress|end) ;;
   *) exit 0 ;;
 esac
 
@@ -79,6 +84,8 @@ print(json.dumps({
     "claudeSession": d.get("session_id") or "",
     "transcript":    d.get("transcript_path") or "",
     "event":         d.get("hook_event_name") or "",
+    # SessionStart source, SessionEnd reason, compaction trigger: for the log.
+    "detail":        str(d.get("source") or d.get("reason") or d.get("trigger") or "")[:24],
 }))
 ' 2>/dev/null)" || exit 0
 fi
